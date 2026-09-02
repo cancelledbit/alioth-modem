@@ -1,0 +1,267 @@
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts b/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
+index 4652c6241..832343dbb 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
+@@ -22,10 +22,6 @@
+  * Delete following upstream (sm8250.dtsi) reserved
+  * memory mappings which are different on this device.
+  */
+-/delete-node/ &adsp_mem;
+-/delete-node/ &cdsp_secure_heap;
+-/delete-node/ &slpi_mem;
+-/delete-node/ &spss_mem;
+ /delete-node/ &xbl_aop_mem;
+ 
+ / {
+@@ -151,30 +147,23 @@ vreg_pmu_pcie_1p8: ldo9 {
+ 	};
+ 
+ 	reserved-memory {
++		/* Геометрия совпадает с Android, чтобы лог читался из TWRP */
++		ramoops@b0000000 {
++			compatible = "ramoops";
++			reg = <0x0 0xb0000000 0x0 0x400000>;
++			console-size = <0x200000>;
++			pmsg-size = <0x200000>;
++			record-size = <0x0>;
++		};
++
+ 		xbl_aop_mem: xbl-aop@80700000 {
+ 			reg = <0x0 0x80600000 0x0 0x260000>;
+ 			no-map;
+ 		};
+ 
+-		slpi_mem: slpi@88c00000 {
+-			reg = <0x0 0x88c00000 0x0 0x2f00000>;
+-			no-map;
+-		};
+ 
+-		adsp_mem: adsp@8bb00000 {
+-			reg = <0x0 0x8bb00000 0x0 0x2500000>;
+-			no-map;
+-		};
+ 
+-		spss_mem: spss@8e000000 {
+-			reg = <0x0 0x8e000000 0x0 0x100000>;
+-			no-map;
+-		};
+ 
+-		cdsp_secure_heap: cdsp-secure-heap@8e100000 {
+-			reg = <0x0 0x8e100000 0x0 0x4600000>;
+-			no-map;
+-		};
+ 	};
+ };
+ 
+@@ -930,6 +919,50 @@ &pcie0_phy {
+ 	status = "okay";
+ };
+ 
++/* SDX55 5G modem sits behind PCIe2; esoc handshake lines go to TLMM */
++&pcie2 {
++	pinctrl-0 = <&pcie2_default_state &mdm2ap_default &ap2mdm_default>;
++
++	status = "okay";
++};
++
++/*
++ * The SDX55 has its own PMIC (PMX55, "prairie") at SPMI SID 8.  The stock
++ * overlay describes it as qcom,pmxprairie@8 with a qcom,qpnp-power-on block at
++ * 0x800 marked qcom,modem-reset; esoc warm-resets the modem through it
++ * (sdx55m_toggle_soft_reset -> qpnp_pon_modem_pwr_off).  Only the PON block is
++ * described here, with a private compatible, so nothing else claims the device.
++ */
++&spmi_bus {
++	pmx55: pmic@8 {
++		compatible = "xiaomi,alioth-modem-pmic";
++		reg = <0x8 SPMI_USID>;
++	};
++};
++
++/*
++ * The esoc handshake lines, named in the stock qcom,mdm0 node.  Nothing in
++ * mainline drives them; the modem will not leave SBL until ap2mdm-status is
++ * high, which six runs with and without it showed cleanly.
++ */
++/ {
++	modem_ctrl: modem-ctrl {
++		compatible = "xiaomi,alioth-modem-ctrl";
++
++		ap2mdm-status-gpios = <&tlmm 56 GPIO_ACTIVE_HIGH>;
++		ap2mdm-errfatal-gpios = <&tlmm 57 GPIO_ACTIVE_HIGH>;
++		mdm2ap-status-gpios = <&tlmm 3 GPIO_ACTIVE_HIGH>;
++		mdm2ap-errfatal-gpios = <&tlmm 1 GPIO_ACTIVE_HIGH>;
++	};
++};
++
++&pcie2_phy {
++	vdda-phy-supply = <&vreg_l5a_0p88>;
++	vdda-pll-supply = <&vreg_l9a_1p2>;
++
++	status = "okay";
++};
++
+ &pcieport0 {
+ 	wifi@0 {
+ 		compatible = "pci17cb,1101";
+@@ -1115,12 +1148,35 @@ codec {
+ 
+ &slpi {
+ 	firmware-name = "qcom/sm8250/xiaomi/alioth/slpi.mbn";
+-	status = "okay";
++	/*
++	 * Прошивка поднимается и проходит проверку, но внутри неё стартует
++	 * пользовательский домен sensor_process, который ждёт закрытый демон
++	 * датчиков Qualcomm. На mainline его нет, поэтому сторожевой таймер
++	 * прошивки роняет SLPI каждые ~40 секунд. Сами датчики (акселерометр,
++	 * гироскоп, магнитометр, приближение) висят за SLPI и без этого демона
++	 * недоступны всё равно, так что включать его смысла нет.
++	 * Чтобы вернуть: status = "okay".
++	 */
++	status = "disabled";
+ };
+ 
+ &tlmm {
+ 	gpio-reserved-ranges = <28 4>, <40 4>;
+ 
++	ap2mdm_default: ap2mdm-default-state {
++		pins = "gpio56", "gpio57";
++		function = "gpio";
++		drive-strength = <16>;
++		bias-disable;
++	};
++
++	mdm2ap_default: mdm2ap-default-state {
++		pins = "gpio1", "gpio3";
++		function = "gpio";
++		drive-strength = <8>;
++		bias-disable;
++	};
++
+ 	tert_tdm_active: tert-tdm-active-state {
+ 		sck-pins {
+ 			pins = "gpio133";
+diff --git a/arch/arm64/boot/dts/qcom/sm8250.dtsi b/arch/arm64/boot/dts/qcom/sm8250.dtsi
+index 68613ea71..cd7573341 100644
+--- a/arch/arm64/boot/dts/qcom/sm8250.dtsi
++++ b/arch/arm64/boot/dts/qcom/sm8250.dtsi
+@@ -789,72 +789,72 @@ smem_mem: memory@80900000 {
+ 		};
+ 
+ 		removed_mem: memory@80b00000 {
+-			reg = <0x0 0x80b00000 0x0 0x5300000>;
++			reg = <0x0 0x80b00000 0x0 0xaf00000>;
+ 			no-map;
+ 		};
+ 
+-		camera_mem: memory@86200000 {
+-			reg = <0x0 0x86200000 0x0 0x500000>;
++		camera_mem: memory@8be00000 {
++			reg = <0x0 0x8be00000 0x0 0x500000>;
+ 			no-map;
+ 		};
+ 
+-		wlan_mem: memory@86700000 {
+-			reg = <0x0 0x86700000 0x0 0x100000>;
++		wlan_mem: memory@8c300000 {
++			reg = <0x0 0x8c300000 0x0 0x100000>;
+ 			no-map;
+ 		};
+ 
+-		ipa_fw_mem: memory@86800000 {
+-			reg = <0x0 0x86800000 0x0 0x10000>;
++		ipa_fw_mem: memory@8c400000 {
++			reg = <0x0 0x8c400000 0x0 0x10000>;
+ 			no-map;
+ 		};
+ 
+-		ipa_gsi_mem: memory@86810000 {
+-			reg = <0x0 0x86810000 0x0 0xa000>;
++		ipa_gsi_mem: memory@8c410000 {
++			reg = <0x0 0x8c410000 0x0 0xa000>;
+ 			no-map;
+ 		};
+ 
+-		gpu_mem: memory@8681a000 {
+-			reg = <0x0 0x8681a000 0x0 0x2000>;
++		gpu_mem: memory@8c41a000 {
++			reg = <0x0 0x8c41a000 0x0 0x2000>;
+ 			no-map;
+ 		};
+ 
+-		npu_mem: memory@86900000 {
+-			reg = <0x0 0x86900000 0x0 0x500000>;
++		npu_mem: memory@8c500000 {
++			reg = <0x0 0x8c500000 0x0 0x500000>;
+ 			no-map;
+ 		};
+ 
+-		video_mem: memory@86e00000 {
+-			reg = <0x0 0x86e00000 0x0 0x500000>;
++		video_mem: memory@8ca00000 {
++			reg = <0x0 0x8ca00000 0x0 0x500000>;
+ 			no-map;
+ 		};
+ 
+-		cvp_mem: memory@87300000 {
+-			reg = <0x0 0x87300000 0x0 0x500000>;
++		cvp_mem: memory@8cf00000 {
++			reg = <0x0 0x8cf00000 0x0 0x500000>;
+ 			no-map;
+ 		};
+ 
+-		cdsp_mem: memory@87800000 {
+-			reg = <0x0 0x87800000 0x0 0x1400000>;
++		cdsp_mem: memory@8d400000 {
++			reg = <0x0 0x8d400000 0x0 0x1400000>;
+ 			no-map;
+ 		};
+ 
+-		slpi_mem: memory@88c00000 {
+-			reg = <0x0 0x88c00000 0x0 0x1500000>;
++		slpi_mem: memory@8e800000 {
++			reg = <0x0 0x8e800000 0x0 0x2f00000>;
+ 			no-map;
+ 		};
+ 
+-		adsp_mem: memory@8a100000 {
+-			reg = <0x0 0x8a100000 0x0 0x1d00000>;
++		adsp_mem: memory@91700000 {
++			reg = <0x0 0x91700000 0x0 0x2500000>;
+ 			no-map;
+ 		};
+ 
+-		spss_mem: memory@8be00000 {
+-			reg = <0x0 0x8be00000 0x0 0x100000>;
++		spss_mem: memory@93c00000 {
++			reg = <0x0 0x93c00000 0x0 0x100000>;
+ 			no-map;
+ 		};
+ 
+-		cdsp_secure_heap: memory@8bf00000 {
+-			reg = <0x0 0x8bf00000 0x0 0x4600000>;
++		cdsp_secure_heap: memory@93d00000 {
++			reg = <0x0 0x93d00000 0x0 0x4600000>;
+ 			no-map;
+ 		};
+ 	};
+@@ -2394,7 +2394,8 @@ pcie2: pcie@1c10000 {
+ 				     <GIC_SPI 264 IRQ_TYPE_LEVEL_HIGH>,
+ 				     <GIC_SPI 278 IRQ_TYPE_LEVEL_HIGH>,
+ 				     <GIC_SPI 288 IRQ_TYPE_LEVEL_HIGH>,
+-				     <GIC_SPI 289 IRQ_TYPE_LEVEL_HIGH>;
++				     <GIC_SPI 289 IRQ_TYPE_LEVEL_HIGH>,
++				     <GIC_SPI 236 IRQ_TYPE_LEVEL_HIGH>;
+ 			interrupt-names = "msi0",
+ 					  "msi1",
+ 					  "msi2",
+@@ -2402,7 +2403,8 @@ pcie2: pcie@1c10000 {
+ 					  "msi4",
+ 					  "msi5",
+ 					  "msi6",
+-					  "msi7";
++					  "msi7",
++					  "global";
+ 			#interrupt-cells = <1>;
+ 			interrupt-map-mask = <0 0 0 0x7>;
+ 			interrupt-map = <0 0 0 1 &intc 0 290 IRQ_TYPE_LEVEL_HIGH>, /* int_a */

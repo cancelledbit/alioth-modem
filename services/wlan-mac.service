@@ -1,0 +1,12 @@
+[Unit]
+Description=Restore the factory Wi-Fi MAC address from the persist partition
+Before=NetworkManager.service
+After=systemd-modules-load.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/wlan-mac.sh wlp1s0
+
+[Install]
+WantedBy=multi-user.target

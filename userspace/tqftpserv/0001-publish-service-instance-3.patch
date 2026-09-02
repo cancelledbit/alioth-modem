@@ -1,0 +1,13 @@
+diff --git a/tqftpserv.c b/tqftpserv.c
+index 5231243..dce333c 100644
+--- a/tqftpserv.c
++++ b/tqftpserv.c
+@@ -946,7 +946,7 @@ int main(int argc, char **argv)
+ 		exit(1);
+ 	}
+ 
+-	ret = qrtr_publish(fd, 4096, 1, 0);
++	ret = qrtr_publish(fd, 4096, 3, 0);
+ 	if (ret < 0) {
+ 		fprintf(stderr, "failed to publish service registry service\n");
+ 		exit(1);

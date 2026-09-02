@@ -1,0 +1,27 @@
+diff --git a/data/gmobile.gresources.xml b/data/gmobile.gresources.xml
+index 135caa1..9689bbc 100644
+--- a/data/gmobile.gresources.xml
++++ b/data/gmobile.gresources.xml
+@@ -2,6 +2,7 @@
+ <gresources>
+   <gresource prefix="/mobi/phosh/gmobile/">
+     <!-- Devices with one panel matched by their DT compatible -->
++    <file preprocess="json-stripblanks">devices/display-panels/xiaomi,alioth.json</file>
+     <file preprocess="json-stripblanks">devices/display-panels/apple,j314s.json</file>
+     <file preprocess="json-stripblanks">devices/display-panels/apple,j414s.json</file>
+     <file preprocess="json-stripblanks">devices/display-panels/daria,zahedan.json</file>
+--- new file: data/devices/display-panels/xiaomi,alioth.json ---
+{
+  "name": "Xiaomi Poco F3 / Redmi K40 / Mi 11X (alioth)",
+  "x-res": 1080,
+  "y-res": 2400,
+  "corner-radii": [60, 60, 60, 60],
+  "width": 75,
+  "height": 160,
+  "cutouts": [
+    {
+      "name": "punch-hole",
+      "path": "M 518,52 A 22,22 0 1 0 562,52 A 22,22 0 1 0 518,52 Z"
+    }
+  ]
+}

@@ -1,0 +1,15 @@
+[Unit]
+Description=Bring up the SDX55 modem so ModemManager can use it
+# Nothing here needs the network, but ModemManager must exist to be restarted
+# at the end, and NetworkManager should already be running when it reappears.
+After=systemd-modules-load.service NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/bin/modem-up.sh
+TimeoutStartSec=600
+
+[Install]
+WantedBy=multi-user.target

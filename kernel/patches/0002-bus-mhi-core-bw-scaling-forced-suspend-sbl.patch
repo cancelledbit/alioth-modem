@@ -1,0 +1,694 @@
+diff --git a/drivers/bus/mhi/common.h b/drivers/bus/mhi/common.h
+index dda340aae..7ef2fe4c5 100644
+--- a/drivers/bus/mhi/common.h
++++ b/drivers/bus/mhi/common.h
+@@ -164,6 +164,29 @@
+ #define MHI_TRE_GET_EV_VEID(tre)	FIELD_GET(GENMASK(23, 16), (MHI_TRE_GET_DWORD(tre, 0)))
+ #define MHI_TRE_GET_EV_LINKSPEED(tre)	FIELD_GET(GENMASK(31, 24), (MHI_TRE_GET_DWORD(tre, 1)))
+ #define MHI_TRE_GET_EV_LINKWIDTH(tre)	FIELD_GET(GENMASK(7, 0), (MHI_TRE_GET_DWORD(tre, 0)))
++#define MHI_TRE_GET_EV_BW_REQ_SEQ(tre)	FIELD_GET(GENMASK(15, 8), (MHI_TRE_GET_DWORD(tre, 0)))
++
++/* Capability list in the MHI register space, walked from MISC */
++#define MHI_MISC_OFFSET			0x24
++#define MHI_CAP_CAPID_MASK		GENMASK(31, 24)
++#define MHI_CAP_NEXT_CAP_MASK		GENMASK(23, 12)
++#define MHI_BW_SCALE_CAP_ID		3
++
++/* Bandwidth scaling capability, one register past the capability header */
++#define MHI_BW_SCALE_CFG_OFFSET		0x04
++#define MHI_BW_SCALE_CFG_CHAN_DB_ID	GENMASK(31, 25)
++#define MHI_BW_SCALE_CFG_ENABLED	BIT(24)
++#define MHI_BW_SCALE_CFG_ER_ID		GENMASK(23, 19)
++#define MHI_BW_SCALE_CHAN_DB		126
++#define MHI_BW_SCALE_NACK		0xf
++
++#define MHI_BW_SCALE_SETUP(er_index) \
++	(FIELD_PREP(MHI_BW_SCALE_CFG_CHAN_DB_ID, MHI_BW_SCALE_CHAN_DB) | \
++	 MHI_BW_SCALE_CFG_ENABLED | \
++	 FIELD_PREP(MHI_BW_SCALE_CFG_ER_ID, er_index))
++
++#define MHI_BW_SCALE_RESULT(status, seq) \
++	(FIELD_PREP(GENMASK(11, 8), (status)) | FIELD_PREP(GENMASK(7, 0), (seq)))
+ 
+ /* State change event */
+ #define MHI_SC_EV_PTR			0
+diff --git a/drivers/bus/mhi/host/boot.c b/drivers/bus/mhi/host/boot.c
+index efa3b6ddd..07e3f768f 100644
+--- a/drivers/bus/mhi/host/boot.c
++++ b/drivers/bus/mhi/host/boot.c
+@@ -555,6 +555,8 @@ void mhi_fw_load_handler(struct mhi_controller *mhi_cntrl)
+ 
+ skip_req_fw:
+ 	fw_load_type = mhi_fw_load_type_get(mhi_cntrl);
++	dev_info(dev, "MHIDBG loading %s: %zu of %zu bytes, type %d\n",
++		 fw_name ? fw_name : "(embedded)", size, fw_sz, fw_load_type);
+ 	if (fw_load_type == MHI_FW_LOAD_BHIE)
+ 		ret = mhi_load_image_bhie(mhi_cntrl, fw_data, size);
+ 	else
+@@ -575,6 +577,28 @@ void mhi_fw_load_handler(struct mhi_controller *mhi_cntrl)
+ 		goto fw_load_ready_state;
+ 	}
+ 
++	/*
++	 * A flashless modem bounces the PCIe link the moment its SBL takes
++	 * over.  Everything we program before that is lost, so wait for the
++	 * device to come back and settle in SBL before touching MMIO.
++	 */
++	if (mhi_cntrl->wait_for_sbl) {
++		int i;
++
++		for (i = 0; i < 300; i++) {
++			u32 val = U32_MAX;
++
++			if (!mhi_read_reg(mhi_cntrl, mhi_cntrl->regs,
++					  MHISTATUS, &val) && val != U32_MAX &&
++			    mhi_get_exec_env(mhi_cntrl) == MHI_EE_SBL)
++				break;
++			msleep(100);
++		}
++		dev_info(dev, "MHIDBG settled after %d ms, ee=%d\n",
++			 i * 100, mhi_get_exec_env(mhi_cntrl));
++
++	}
++
+ 	write_lock_irq(&mhi_cntrl->pm_lock);
+ 	mhi_cntrl->dev_state = MHI_STATE_RESET;
+ 	write_unlock_irq(&mhi_cntrl->pm_lock);
+diff --git a/drivers/bus/mhi/host/init.c b/drivers/bus/mhi/host/init.c
+index 13e7a55f5..f14bad9b7 100644
+--- a/drivers/bus/mhi/host/init.c
++++ b/drivers/bus/mhi/host/init.c
+@@ -467,6 +467,96 @@ int mhi_init_dev_ctxt(struct mhi_controller *mhi_cntrl)
+ 	return ret;
+ }
+ 
++/* Walk the capability list in the MHI register space, as downstream does */
++static int mhi_get_capability_offset(struct mhi_controller *mhi_cntrl,
++				     u32 capability, u32 *offset)
++{
++	u32 cur_cap, next_offset;
++	int ret;
++
++	ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, MHI_MISC_OFFSET, offset);
++	if (ret)
++		return ret;
++
++	do {
++		if (*offset >= mhi_cntrl->reg_len)
++			return -ENXIO;
++
++		ret = mhi_read_reg(mhi_cntrl, mhi_cntrl->regs, *offset, &cur_cap);
++		if (ret)
++			return ret;
++
++		next_offset = FIELD_GET(MHI_CAP_NEXT_CAP_MASK, cur_cap);
++		cur_cap = FIELD_GET(MHI_CAP_CAPID_MASK, cur_cap);
++
++		if (cur_cap == capability)
++			return 0;
++
++		*offset = next_offset;
++	} while (next_offset);
++
++	return -ENXIO;
++}
++
++static int mhi_get_er_index(struct mhi_controller *mhi_cntrl,
++			    enum mhi_er_data_type type)
++{
++	struct mhi_event *mhi_event = mhi_cntrl->mhi_event;
++	int i;
++
++	for (i = 0; i < mhi_cntrl->total_ev_rings; i++, mhi_event++)
++		if (mhi_event->data_type == type)
++			return mhi_event->er_index;
++
++	return -ENOENT;
++}
++
++/*
++ * The device asks the host to change the PCIe link bandwidth over a dedicated
++ * event ring, and waits for an answer.  Nothing answers unless the host says
++ * up front that it can, which is what this writes.
++ */
++static int mhi_init_bw_scale(struct mhi_controller *mhi_cntrl)
++{
++	struct device *dev = &mhi_cntrl->mhi_dev->dev;
++	u32 bw_cfg_offset, val;
++	int ret, er_index;
++
++	if (!mhi_cntrl->bw_scale) {
++		dev_dbg(dev, "No bandwidth scaling callback, skipping\n");
++		return -ENODEV;
++	}
++
++	ret = mhi_get_capability_offset(mhi_cntrl, MHI_BW_SCALE_CAP_ID,
++					&bw_cfg_offset);
++	if (ret) {
++		dev_info(dev, "Device does not offer bandwidth scaling\n");
++		return ret;
++	}
++
++	er_index = mhi_get_er_index(mhi_cntrl, MHI_ER_BW_SCALE);
++	if (er_index < 0) {
++		dev_warn(dev, "Device offers bandwidth scaling but no event ring is configured for it\n");
++		return er_index;
++	}
++
++	ret = mhi_get_channel_doorbell_offset(mhi_cntrl, &val);
++	if (ret)
++		return ret;
++
++	mhi_cntrl->bw_scale_db = mhi_cntrl->regs + val +
++				 (8 * MHI_BW_SCALE_CHAN_DB);
++
++	bw_cfg_offset += MHI_BW_SCALE_CFG_OFFSET;
++	mhi_write_reg(mhi_cntrl, mhi_cntrl->regs, bw_cfg_offset,
++		      MHI_BW_SCALE_SETUP(er_index));
++
++	dev_info(dev, "Bandwidth scaling on: cfg at %#x, event ring %d, doorbell +%#x\n",
++		 bw_cfg_offset, er_index, val + (8 * MHI_BW_SCALE_CHAN_DB));
++
++	return 0;
++}
++
+ int mhi_init_mmio(struct mhi_controller *mhi_cntrl)
+ {
+ 	u32 val;
+@@ -582,6 +672,9 @@ int mhi_init_mmio(struct mhi_controller *mhi_cntrl)
+ 		mhi_event->ring.db_addr = base + val;
+ 	}
+ 
++	/* Tell the device we can answer its bandwidth requests */
++	mhi_init_bw_scale(mhi_cntrl);
++
+ 	/* Setup DB register for primary CMD rings */
+ 	mhi_cntrl->mhi_cmd[PRIMARY_CMD_RING].ring.db_addr = base + CRDB_LOWER;
+ 
+@@ -749,6 +842,9 @@ static int parse_ev_cfg(struct mhi_controller *mhi_cntrl,
+ 		case MHI_ER_CTRL:
+ 			mhi_event->process_event = mhi_process_ctrl_ev_ring;
+ 			break;
++		case MHI_ER_BW_SCALE:
++			mhi_event->process_event = mhi_process_bw_scale_ev_ring;
++			break;
+ 		default:
+ 			dev_err(dev, "Event Ring type not supported\n");
+ 			goto error_ev_cfg;
+@@ -942,12 +1038,26 @@ int mhi_register_controller(struct mhi_controller *mhi_cntrl,
+ 	    !mhi_cntrl->runtime_get || !mhi_cntrl->runtime_put ||
+ 	    !mhi_cntrl->status_cb || !mhi_cntrl->read_reg ||
+ 	    !mhi_cntrl->write_reg || !mhi_cntrl->nr_irqs ||
+-	    !mhi_cntrl->irq || !mhi_cntrl->reg_len)
++	    !mhi_cntrl->irq || !mhi_cntrl->reg_len) {
++		pr_err("MHIDBG register_controller: cntrl=%d dev=%d regs=%d get=%d put=%d cb=%d rd=%d wr=%d nr_irqs=%d irq=%d len=%d\n",
++		       !!mhi_cntrl, mhi_cntrl && !!mhi_cntrl->cntrl_dev,
++		       mhi_cntrl && !!mhi_cntrl->regs,
++		       mhi_cntrl && !!mhi_cntrl->runtime_get,
++		       mhi_cntrl && !!mhi_cntrl->runtime_put,
++		       mhi_cntrl && !!mhi_cntrl->status_cb,
++		       mhi_cntrl && !!mhi_cntrl->read_reg,
++		       mhi_cntrl && !!mhi_cntrl->write_reg,
++		       mhi_cntrl ? mhi_cntrl->nr_irqs : -1,
++		       mhi_cntrl && !!mhi_cntrl->irq,
++		       mhi_cntrl ? (int)mhi_cntrl->reg_len : -1);
+ 		return -EINVAL;
++	}
+ 
+ 	ret = parse_config(mhi_cntrl, config);
+-	if (ret)
++	if (ret) {
++		pr_err("MHIDBG register_controller: parse_config -> %d\n", ret);
+ 		return -EINVAL;
++	}
+ 
+ 	mhi_cntrl->mhi_cmd = kcalloc(NR_OF_CMD_RINGS,
+ 				     sizeof(*mhi_cntrl->mhi_cmd), GFP_KERNEL);
+@@ -962,6 +1072,8 @@ int mhi_register_controller(struct mhi_controller *mhi_cntrl,
+ 	spin_lock_init(&mhi_cntrl->transition_lock);
+ 	spin_lock_init(&mhi_cntrl->wlock);
+ 	INIT_WORK(&mhi_cntrl->st_worker, mhi_pm_st_worker);
++	INIT_WORK(&mhi_cntrl->bw_scale_work, mhi_bw_scale_work);
++	INIT_DELAYED_WORK(&mhi_cntrl->ev_poll_work, mhi_ev_poll_work);
+ 	init_waitqueue_head(&mhi_cntrl->state_event);
+ 
+ 	mhi_cntrl->hiprio_wq = alloc_ordered_workqueue("mhi_hiprio_wq", WQ_HIGHPRI);
+@@ -1077,6 +1189,7 @@ void mhi_unregister_controller(struct mhi_controller *mhi_cntrl)
+ 	unsigned int i;
+ 
+ 	mhi_deinit_free_irq(mhi_cntrl);
++	cancel_work_sync(&mhi_cntrl->bw_scale_work);
+ 	mhi_destroy_debugfs(mhi_cntrl);
+ 
+ 	if (mhi_cntrl->edl_trigger)
+diff --git a/drivers/bus/mhi/host/internal.h b/drivers/bus/mhi/host/internal.h
+index ce566f7d2..42db2f695 100644
+--- a/drivers/bus/mhi/host/internal.h
++++ b/drivers/bus/mhi/host/internal.h
+@@ -74,7 +74,8 @@ extern const char * const mhi_ee_str[MHI_EE_MAX];
+ 
+ #define MHI_IN_PBL(ee) (ee == MHI_EE_PBL || ee == MHI_EE_PTHRU || \
+ 			ee == MHI_EE_EDL)
+-#define MHI_POWER_UP_CAPABLE(ee) (MHI_IN_PBL(ee) || ee == MHI_EE_AMSS)
++#define MHI_POWER_UP_CAPABLE(ee) (MHI_IN_PBL(ee) || ee == MHI_EE_SBL || \
++				  ee == MHI_EE_AMSS)
+ #define MHI_FW_LOAD_CAPABLE(ee) (ee == MHI_EE_PBL || ee == MHI_EE_EDL)
+ #define MHI_IN_MISSION_MODE(ee) (ee == MHI_EE_AMSS || ee == MHI_EE_WFW || \
+ 				 ee == MHI_EE_FP)
+@@ -319,6 +320,7 @@ struct mhi_device *mhi_alloc_device(struct mhi_controller *mhi_cntrl);
+ 
+ int mhi_destroy_device(struct device *dev, void *data);
+ void mhi_create_devices(struct mhi_controller *mhi_cntrl);
++void mhi_ev_poll_work(struct work_struct *work);
+ 
+ int mhi_alloc_bhie_table(struct mhi_controller *mhi_cntrl,
+ 			 struct image_info **image_info, size_t alloc_size);
+@@ -408,6 +410,9 @@ void mhi_ctrl_ev_task(unsigned long data);
+ void mhi_ev_task(unsigned long data);
+ int mhi_process_data_event_ring(struct mhi_controller *mhi_cntrl,
+ 				struct mhi_event *mhi_event, u32 event_quota);
++void mhi_bw_scale_work(struct work_struct *work);
++int mhi_process_bw_scale_ev_ring(struct mhi_controller *mhi_cntrl,
++				 struct mhi_event *mhi_event, u32 event_quota);
+ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
+ 			     struct mhi_event *mhi_event, u32 event_quota);
+ 
+diff --git a/drivers/bus/mhi/host/main.c b/drivers/bus/mhi/host/main.c
+index 9bb0df43c..a88654fc6 100644
+--- a/drivers/bus/mhi/host/main.c
++++ b/drivers/bus/mhi/host/main.c
+@@ -431,6 +431,12 @@ void mhi_create_devices(struct mhi_controller *mhi_cntrl)
+ 
+ irqreturn_t mhi_irq_handler(int irq_number, void *dev)
+ {
++	{
++		struct mhi_event *_ev = dev;
++		dev_info_ratelimited(&_ev->mhi_cntrl->mhi_dev->dev,
++				     "MHIDBG ev irq %d ring %d\n",
++				     irq_number, _ev->er_index);
++	}
+ 	struct mhi_event *mhi_event = dev;
+ 	struct mhi_controller *mhi_cntrl = mhi_event->mhi_cntrl;
+ 	struct mhi_event_ctxt *er_ctxt;
+@@ -495,6 +501,17 @@ irqreturn_t mhi_intvec_threaded_handler(int irq_number, void *priv)
+ 	state = mhi_get_mhi_state(mhi_cntrl);
+ 	ee = mhi_get_exec_env(mhi_cntrl);
+ 
++	dev_info(dev, "MHIDBG intvec: ee=%d state=%d (known ee=%d)\n",
++		 ee, state, mhi_cntrl->ee);
++
++	if (state != MHI_STATE_SYS_ERR && ee != mhi_cntrl->ee) {
++		if (ee == MHI_EE_SBL)
++			mhi_queue_state_transition(mhi_cntrl, DEV_ST_TRANSITION_SBL);
++		else if (MHI_IN_MISSION_MODE(ee))
++			mhi_queue_state_transition(mhi_cntrl,
++						   DEV_ST_TRANSITION_MISSION_MODE);
++	}
++
+ 	trace_mhi_intvec_states(mhi_cntrl, ee, state);
+ 	if (state == MHI_STATE_SYS_ERR) {
+ 		dev_dbg(dev, "System error detected\n");
+@@ -690,7 +707,9 @@ static int parse_xfer_event(struct mhi_controller *mhi_cntrl,
+ 	}
+ 	case MHI_EV_CC_BAD_TRE:
+ 	default:
+-		dev_err(dev, "Unknown event 0x%x\n", ev_code);
++		dev_err(dev, "Unknown event 0x%x on chan %d dir %d, xfer_len %llu\n",
++			ev_code, mhi_chan->chan, mhi_chan->dir,
++			(unsigned long long)MHI_TRE_GET_EV_LEN(event));
+ 		break;
+ 	} /* switch(MHI_EV_READ_CODE(EV_TRB_CODE,event)) */
+ 
+@@ -802,6 +821,112 @@ static void mhi_process_cmd_completion(struct mhi_controller *mhi_cntrl,
+ 	mhi_del_ring_element(mhi_cntrl, mhi_ring);
+ }
+ 
++/*
++ * The device posts a bandwidth request here and waits for the host to write a
++ * result to the bandwidth doorbell.  Ported from the downstream
++ * mhi_process_bw_scale_ev_ring().
++ */
++void mhi_bw_scale_work(struct work_struct *work)
++{
++	struct mhi_controller *mhi_cntrl = container_of(work,
++						struct mhi_controller,
++						bw_scale_work);
++	struct device *dev = &mhi_cntrl->mhi_dev->dev;
++	struct mhi_link_info link_info = mhi_cntrl->bw_scale_req;
++	int result, ret;
++
++	ret = mhi_cntrl->bw_scale(mhi_cntrl, &link_info);
++	if (!ret)
++		mhi_cntrl->mhi_link_info = link_info;
++
++	result = ret ? MHI_BW_SCALE_NACK : 0;
++
++	read_lock_bh(&mhi_cntrl->pm_lock);
++	if (likely(MHI_DB_ACCESS_VALID(mhi_cntrl)))
++		mhi_write_reg(mhi_cntrl, mhi_cntrl->bw_scale_db, 0,
++			      MHI_BW_SCALE_RESULT(result, link_info.sequence_num));
++	read_unlock_bh(&mhi_cntrl->pm_lock);
++
++	dev_info(dev, "Bandwidth request seq %d answered: %s (%d)\n",
++		 link_info.sequence_num, ret ? "NACK" : "ACK", ret);
++}
++
++int mhi_process_bw_scale_ev_ring(struct mhi_controller *mhi_cntrl,
++				 struct mhi_event *mhi_event, u32 event_quota)
++{
++	struct mhi_ring_element *dev_rp;
++	struct mhi_ring *ev_ring = &mhi_event->ring;
++	struct mhi_event_ctxt *er_ctxt =
++		&mhi_cntrl->mhi_ctxt->er_ctxt[mhi_event->er_index];
++	struct mhi_link_info link_info;
++	struct device *dev = &mhi_cntrl->mhi_dev->dev;
++	dma_addr_t ptr = le64_to_cpu(er_ctxt->rp);
++
++	/*
++	 * Called from mhi_ev_task() with mhi_event->lock already held, exactly
++	 * like the control and data ring handlers.  Taking it here again wedges
++	 * the tasklet for good - that cost a night once already.
++	 */
++	if (unlikely(MHI_EVENT_ACCESS_INVALID(mhi_cntrl->pm_state)))
++		return -EIO;
++
++	if (!mhi_cntrl->bw_scale || !mhi_cntrl->bw_scale_db) {
++		dev_err(dev, "Bandwidth event with no way to answer it\n");
++		return -EINVAL;
++	}
++
++	if (!is_valid_ring_ptr(ev_ring, ptr)) {
++		dev_err(dev, "Bandwidth event ring rp points outside of the ring\n");
++		return -EIO;
++	}
++
++	dev_rp = mhi_to_virtual(ev_ring, ptr);
++	if (ev_ring->rp == dev_rp)
++		return 0;
++
++	/* the newest element is the one before the device read pointer */
++	if (dev_rp == ev_ring->base)
++		dev_rp = ev_ring->base + ev_ring->len;
++	dev_rp--;
++
++	if (MHI_TRE_GET_EV_TYPE(dev_rp) != MHI_PKT_TYPE_BW_REQ_EVENT) {
++		dev_err(dev, "Unexpected event %u on the bandwidth ring\n",
++			(unsigned int)MHI_TRE_GET_EV_TYPE(dev_rp));
++		return -EIO;
++	}
++
++	link_info.target_link_speed = MHI_TRE_GET_EV_LINKSPEED(dev_rp);
++	link_info.target_link_width = MHI_TRE_GET_EV_LINKWIDTH(dev_rp);
++	link_info.sequence_num = MHI_TRE_GET_EV_BW_REQ_SEQ(dev_rp);
++
++	/* fast forward past everything we just consumed and hand the ring back */
++	ev_ring->rp = dev_rp;
++	ev_ring->wp = dev_rp - 1;
++	if (ev_ring->wp < ev_ring->base)
++		ev_ring->wp = ev_ring->base + ev_ring->len - ev_ring->el_size;
++	mhi_recycle_ev_ring_element(mhi_cntrl, ev_ring);
++
++	read_lock_bh(&mhi_cntrl->pm_lock);
++	if (likely(MHI_DB_ACCESS_VALID(mhi_cntrl)))
++		mhi_ring_er_db(mhi_event);
++	read_unlock_bh(&mhi_cntrl->pm_lock);
++
++	dev_info(dev, "Bandwidth request seq %d: speed %#x width %#x\n",
++		 link_info.sequence_num, link_info.target_link_speed,
++		 link_info.target_link_width);
++
++	/*
++	 * The answer needs a sleepable context: mhi_cntrl->bw_scale() may talk
++	 * to PCI config space.  system_unbound_wq is safe here only because
++	 * mhi_bw_scale_work() never blocks on device_lock - the recovery work
++	 * that does is what deadlocked against mhi_ev_poll_work() before.
++	 */
++	mhi_cntrl->bw_scale_req = link_info;
++	queue_work(system_unbound_wq, &mhi_cntrl->bw_scale_work);
++
++	return 0;
++}
++
+ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
+ 			     struct mhi_event *mhi_event,
+ 			     u32 event_quota)
+@@ -901,8 +1026,8 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
+ 			enum dev_st_transition st = DEV_ST_TRANSITION_MAX;
+ 			enum mhi_ee_type event = MHI_TRE_GET_EV_EXECENV(local_rp);
+ 
+-			dev_dbg(dev, "Received EE event: %s\n",
+-				TO_MHI_EXEC_STR(event));
++			dev_info(dev, "MHIDBG Received EE event: %s\n",
++				 TO_MHI_EXEC_STR(event));
+ 			switch (event) {
+ 			case MHI_EE_SBL:
+ 				st = DEV_ST_TRANSITION_SBL;
+@@ -947,7 +1072,11 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
+ 			}
+ 			break;
+ 		default:
+-			dev_err(dev, "Unhandled event type: %d\n", type);
++			dev_err(dev, "Unhandled event type: %d (tre %llx %llx)\n",
++				type,
++				(unsigned long long)le64_to_cpu(local_rp->ptr),
++				(unsigned long long)(((u64)le32_to_cpu(local_rp->dword[1]) << 32) |
++						     le32_to_cpu(local_rp->dword[0])));
+ 			break;
+ 		}
+ 
+diff --git a/drivers/bus/mhi/host/pm.c b/drivers/bus/mhi/host/pm.c
+index 2fb27e6f8..5cbeb1728 100644
+--- a/drivers/bus/mhi/host/pm.c
++++ b/drivers/bus/mhi/host/pm.c
+@@ -167,12 +167,39 @@ static void mhi_toggle_dev_wake(struct mhi_controller *mhi_cntrl)
+ }
+ 
+ /* Handle device ready state transition */
++/*
++ * Some endpoints never raise an MSI for their event rings even though they do
++ * fill them in.  For those, walk the rings on a timer instead.
++ */
++void mhi_ev_poll_work(struct work_struct *work)
++{
++	struct mhi_controller *mhi_cntrl = container_of(to_delayed_work(work),
++						       struct mhi_controller,
++						       ev_poll_work);
++	int i;
++
++	if (!mhi_cntrl->mhi_ctxt ||
++	    MHI_PM_IN_ERROR_STATE(mhi_cntrl->pm_state))
++		return;
++
++	for (i = 0; i < mhi_cntrl->total_ev_rings; i++) {
++		struct mhi_event *mhi_event = &mhi_cntrl->mhi_event[i];
++
++		if (mhi_event->offload_ev)
++			continue;
++		mhi_irq_handler(0, mhi_event);
++	}
++
++	schedule_delayed_work(&mhi_cntrl->ev_poll_work, msecs_to_jiffies(2));
++}
++
+ int mhi_ready_state_transition(struct mhi_controller *mhi_cntrl)
+ {
+ 	struct mhi_event *mhi_event;
+ 	enum mhi_pm_state cur_state;
+ 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
+ 	u32 interval_us = 25000; /* poll register field every 25 milliseconds */
++	enum mhi_ee_type ee;
+ 	u32 timeout_ms;
+ 	int ret, i;
+ 
+@@ -251,6 +278,25 @@ int mhi_ready_state_transition(struct mhi_controller *mhi_cntrl)
+ 	mhi_set_mhi_state(mhi_cntrl, MHI_STATE_M0);
+ 	read_unlock_bh(&mhi_cntrl->pm_lock);
+ 
++	if (mhi_cntrl->poll_events)
++		schedule_delayed_work(&mhi_cntrl->ev_poll_work,
++				      msecs_to_jiffies(2));
++
++	/*
++	 * A device that switched EE before our event ring was live never got
++	 * its EE event delivered, and one found already past PBL will not send
++	 * another.  Re-read the environment and drive the transition by hand.
++	 */
++	ee = mhi_get_exec_env(mhi_cntrl);
++	if (ee == MHI_EE_SBL || (MHI_IN_MISSION_MODE(ee) && ee != mhi_cntrl->ee)) {
++		dev_info(dev, "MHIDBG post-ready ee=%d (known %d), forcing transition\n",
++			 ee, mhi_cntrl->ee);
++		mhi_queue_state_transition(mhi_cntrl,
++					   ee == MHI_EE_SBL ?
++					   DEV_ST_TRANSITION_SBL :
++					   DEV_ST_TRANSITION_MISSION_MODE);
++	}
++
+ 	return 0;
+ 
+ error_mmio:
+@@ -793,6 +839,10 @@ void mhi_pm_st_worker(struct work_struct *work)
+ 
+ 		trace_mhi_pm_st_transition(mhi_cntrl, itr->state);
+ 
++		dev_info(&mhi_cntrl->mhi_dev->dev,
++			 "MHIDBG st_worker: transition %d, ee=%d\n",
++			 itr->state, mhi_cntrl->ee);
++
+ 		switch (itr->state) {
+ 		case DEV_ST_TRANSITION_PBL:
+ 			write_lock_irq(&mhi_cntrl->pm_lock);
+@@ -842,7 +892,7 @@ void mhi_pm_st_worker(struct work_struct *work)
+ 	}
+ }
+ 
+-int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
++static int __mhi_pm_suspend(struct mhi_controller *mhi_cntrl, bool force)
+ {
+ 	struct mhi_chan *itr, *tmp;
+ 	struct device *dev = &mhi_cntrl->mhi_dev->dev;
+@@ -856,8 +906,8 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
+ 		return -EIO;
+ 
+ 	/* Return busy if there are any pending resources */
+-	if (atomic_read(&mhi_cntrl->dev_wake) ||
+-	    atomic_read(&mhi_cntrl->pending_pkts))
++	if (!force && (atomic_read(&mhi_cntrl->dev_wake) ||
++		       atomic_read(&mhi_cntrl->pending_pkts)))
+ 		return -EBUSY;
+ 
+ 	/* Take MHI out of M2 state */
+@@ -883,8 +933,8 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
+ 
+ 	write_lock_irq(&mhi_cntrl->pm_lock);
+ 
+-	if (atomic_read(&mhi_cntrl->dev_wake) ||
+-	    atomic_read(&mhi_cntrl->pending_pkts)) {
++	if (!force && (atomic_read(&mhi_cntrl->dev_wake) ||
++		       atomic_read(&mhi_cntrl->pending_pkts))) {
+ 		write_unlock_irq(&mhi_cntrl->pm_lock);
+ 		return -EBUSY;
+ 	}
+@@ -928,8 +978,25 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
+ 
+ 	return 0;
+ }
++
++int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
++{
++	return __mhi_pm_suspend(mhi_cntrl, false);
++}
+ EXPORT_SYMBOL_GPL(mhi_pm_suspend);
+ 
++/*
++ * Downstream's mhi_force_suspend(): go to M3 even with queued buffers or a held
++ * wake.  The SDX55 needs one such cycle right after mission mode to retune its
++ * PCIe PHY, and by then every control channel has receive buffers posted, so
++ * the polite version always answers -EBUSY.
++ */
++int mhi_pm_suspend_force(struct mhi_controller *mhi_cntrl)
++{
++	return __mhi_pm_suspend(mhi_cntrl, true);
++}
++EXPORT_SYMBOL_GPL(mhi_pm_suspend_force);
++
+ static int __mhi_pm_resume(struct mhi_controller *mhi_cntrl, bool force)
+ {
+ 	struct mhi_chan *itr, *tmp;
+diff --git a/include/linux/mhi.h b/include/linux/mhi.h
+index dd372b012..29d3fe28d 100644
+--- a/include/linux/mhi.h
++++ b/include/linux/mhi.h
+@@ -102,10 +102,12 @@ struct image_info {
+  * struct mhi_link_info - BW requirement
+  * target_link_speed - Link speed as defined by TLS bits in LinkControl reg
+  * target_link_width - Link width as defined by NLW bits in LinkStatus reg
++ * sequence_num - Sequence number of the request, echoed back in the answer
+  */
+ struct mhi_link_info {
+ 	unsigned int target_link_speed;
+ 	unsigned int target_link_width;
++	int sequence_num;
+ };
+ 
+ /**
+@@ -183,10 +185,12 @@ enum mhi_ch_ee_mask {
+  * enum mhi_er_data_type - Event ring data types
+  * @MHI_ER_DATA: Only client data over this ring
+  * @MHI_ER_CTRL: MHI control data and client data
++ * @MHI_ER_BW_SCALE: Device asks the host to change the PCIe link bandwidth
+  */
+ enum mhi_er_data_type {
+ 	MHI_ER_DATA,
+ 	MHI_ER_CTRL,
++	MHI_ER_BW_SCALE,
+ };
+ 
+ /**
+@@ -340,6 +344,8 @@ struct mhi_controller_config {
+  * @transition_lock: Lock for protecting MHI state transition list
+  * @wlock: Lock for protecting device wakeup
+  * @mhi_link_info: Device bandwidth info
++ * @bw_scale_req: Bandwidth request last parsed off the bandwidth event ring
++ * @bw_scale_work: Answers a bandwidth request outside of tasklet context
+  * @st_worker: State transition worker
+  * @hiprio_wq: High priority workqueue for MHI work such as state transitions
+  * @state_event: State change event
+@@ -359,6 +365,10 @@ struct mhi_controller_config {
+  * @index: Index of the MHI controller instance
+  * @bounce_buf: Use of bounce buffer
+  * @fbc_download: MHI host needs to do complete image transfer (optional)
++ * @wait_for_sbl: device bounces the link when its SBL takes over, so hold off
++ *                touching MHI MMIO until it has come back (optional)
++ * @poll_events: device does not raise MSI for its event rings, poll them
++ * @ev_poll_work: worker doing that polling
+  * @wake_set: Device wakeup set flag
+  * @irq_flags: irq flags passed to request_irq (optional)
+  * @mru: the default MRU for the MHI device
+@@ -375,6 +385,7 @@ struct mhi_controller {
+ 	void __iomem *regs;
+ 	void __iomem *bhi;
+ 	void __iomem *bhie;
++	void __iomem *bw_scale_db;
+ 	void __iomem *wake_db;
+ 
+ 	dma_addr_t iova_start;
+@@ -418,12 +429,16 @@ struct mhi_controller {
+ 	spinlock_t transition_lock;
+ 	spinlock_t wlock;
+ 	struct mhi_link_info mhi_link_info;
++	struct mhi_link_info bw_scale_req;
++	struct work_struct bw_scale_work;
+ 	struct work_struct st_worker;
+ 	struct workqueue_struct *hiprio_wq;
+ 	wait_queue_head_t state_event;
+ 
+ 	void (*status_cb)(struct mhi_controller *mhi_cntrl,
+ 			  enum mhi_callback cb);
++	int (*bw_scale)(struct mhi_controller *mhi_cntrl,
++			struct mhi_link_info *link_info);
+ 	void (*wake_get)(struct mhi_controller *mhi_cntrl, bool override);
+ 	void (*wake_put)(struct mhi_controller *mhi_cntrl, bool override);
+ 	void (*wake_toggle)(struct mhi_controller *mhi_cntrl);
+@@ -444,6 +459,9 @@ struct mhi_controller {
+ 	int index;
+ 	bool bounce_buf;
+ 	bool fbc_download;
++	bool wait_for_sbl;
++	bool poll_events;
++	struct delayed_work ev_poll_work;
+ 	bool wake_set;
+ 	unsigned long irq_flags;
+ 	u32 mru;
+@@ -668,6 +686,12 @@ void mhi_unprepare_after_power_down(struct mhi_controller *mhi_cntrl);
+  */
+ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl);
+ 
++/**
++ * mhi_pm_suspend_force - Move MHI into a suspended state ignoring pending work
++ * @mhi_cntrl: MHI controller
++ */
++int mhi_pm_suspend_force(struct mhi_controller *mhi_cntrl);
++
+ /**
+  * mhi_pm_resume - Resume MHI from suspended state
+  * @mhi_cntrl: MHI controller
