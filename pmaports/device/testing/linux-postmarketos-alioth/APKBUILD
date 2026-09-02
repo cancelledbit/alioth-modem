@@ -4,7 +4,7 @@ maintainer="cancelledbit <akadox@gmail.com>"
 _flavor="postmarketos-alioth"
 pkgname=linux-$_flavor
 pkgver=6.15.1
-pkgrel=1
+pkgrel=2
 pkgdesc="Mainline kernel for Xiaomi Poco F3 (alioth) with SDX55 modem support"
 arch="aarch64"
 _carch="arm64"
@@ -42,6 +42,7 @@ source="
 	0004-net-wwan-mhi_wwan_ctrl-efs-channel.patch
 	0005-pci-qcom-linkdown-recovery.patch
 	0006-platform-gpu-audio-pdr.patch
+	0007-asoc-qdsp6-q6voice-mvm-session.patch
 "
 builddir="$srcdir/linux-$_commit"
 

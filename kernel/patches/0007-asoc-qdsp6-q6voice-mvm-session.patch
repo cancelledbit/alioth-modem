@@ -1,0 +1,210 @@
+diff --git a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts b/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
+--- a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
++++ b/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
+@@ -1146,6 +1146,25 @@
+ 	};
+ };
+ 
++/*
++ * The ADSP's voice services.  The SoC device tree declares the services
++ * mainline has drivers for - core, AFE, ASM, ADM - and stops there; MVM is the
++ * one a phone call runs through, so it has to be declared before anything can
++ * talk to it.
++ */
++&adsp {
++	glink-edge {
++		apr {
++			service@9 {
++				compatible = "qcom,q6mvm";
++				reg = <9>;
++				qcom,protection-domain = "avs/audio",
++							 "msm/adsp/audio_pd";
++			};
++		};
++	};
++};
++
+ &slpi {
+ 	firmware-name = "qcom/sm8250/xiaomi/alioth/slpi.mbn";
+ 	/*
+diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
+new file mode 100644
+--- /dev/null
++++ b/sound/soc/qcom/qdsp6/q6voice.c
+@@ -0,0 +1,148 @@
++// SPDX-License-Identifier: GPL-2.0
++/*
++ * Voice services on the audio DSP.
++ *
++ * A phone call is not played by the application processor at all: the modem and
++ * the ADSP hand the audio to each other, and the ADSP runs the call through
++ * three services of its own - MVM, which owns the call session, CVS, which
++ * carries the encoded speech, and CVP, which does the processing and puts the
++ * result on the codec.  Mainline drives the ADSP's other services already
++ * (q6afe, q6asm, q6adm); these three have never had a driver here, which is why
++ * no mainline phone has audio in a call.
++ *
++ * This is the first step: open an MVM session and see whether the firmware
++ * answers.  Nothing is routed yet.
++ */
++
++#include <linux/kernel.h>
++#include <linux/module.h>
++#include <linux/mod_devicetable.h>
++#include <linux/of.h>
++#include <linux/platform_device.h>
++#include <linux/soc/qcom/apr.h>
++
++#define VSS_IMVM_CMD_CREATE_FULL_CONTROL_SESSION	0x000110FE
++#define APRV2_IBASIC_CMD_DESTROY_SESSION		0x0001003C
++
++/* The session name is variable length: the packet size gives its length. */
++#define MVM_SESSION_NAME	"Voice session"
++
++struct q6voice {
++	struct apr_device *adev;
++	struct device *dev;
++};
++
++static int q6voice_callback(struct apr_device *adev, struct apr_resp_pkt *data)
++{
++	struct aprv2_ibasic_rsp_result_t *result;
++	struct apr_hdr *hdr = &data->hdr;
++
++	if (hdr->opcode != APR_BASIC_RSP_RESULT) {
++		dev_info(&adev->dev, "unsolicited opcode 0x%08x, %d bytes\n",
++			 hdr->opcode, data->payload_size);
++		return 0;
++	}
++
++	if (data->payload_size < sizeof(*result)) {
++		dev_warn(&adev->dev, "short result: %d bytes\n",
++			 data->payload_size);
++		return 0;
++	}
++
++	result = data->payload;
++	dev_info(&adev->dev, "command 0x%08x answered with status %d\n",
++		 result->opcode, result->status);
++
++	return 0;
++}
++
++static int q6voice_create_session(struct q6voice *v)
++{
++	size_t name_len = sizeof(MVM_SESSION_NAME);	/* with the NUL */
++	size_t pkt_size = APR_HDR_SIZE + name_len;
++	struct apr_pkt *pkt;
++	int ret;
++
++	pkt = kzalloc(pkt_size, GFP_KERNEL);
++	if (!pkt)
++		return -ENOMEM;
++
++	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
++					   APR_HDR_LEN(APR_HDR_SIZE),
++					   APR_PKT_VER);
++	pkt->hdr.pkt_size = pkt_size;
++	pkt->hdr.src_port = 0;
++	pkt->hdr.dest_port = 0;
++	pkt->hdr.token = 0;
++	pkt->hdr.opcode = VSS_IMVM_CMD_CREATE_FULL_CONTROL_SESSION;
++	memcpy(pkt->payload, MVM_SESSION_NAME, name_len);
++
++	ret = apr_send_pkt(v->adev, pkt);
++	kfree(pkt);
++
++	/* apr_send_pkt returns the number of bytes it queued */
++	return ret < 0 ? ret : 0;
++}
++
++static int q6voice_probe(struct apr_device *adev)
++{
++	struct device *dev = &adev->dev;
++	struct q6voice *v;
++	int ret;
++
++	v = devm_kzalloc(dev, sizeof(*v), GFP_KERNEL);
++	if (!v)
++		return -ENOMEM;
++
++	v->adev = adev;
++	v->dev = dev;
++	dev_set_drvdata(dev, v);
++
++	dev_info(dev, "MVM service %u on domain %u, version 0x%x\n",
++		 adev->svc_id, adev->domain_id, adev->version);
++
++	ret = q6voice_create_session(v);
++	if (ret) {
++		dev_err(dev, "could not ask for a session: %d\n", ret);
++		return ret;
++	}
++
++	dev_info(dev, "asked the ADSP for a full control session\n");
++
++	return 0;
++}
++
++static void q6voice_remove(struct apr_device *adev)
++{
++	struct q6voice *v = dev_get_drvdata(&adev->dev);
++	struct apr_pkt pkt = {};
++
++	pkt.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
++					  APR_HDR_LEN(APR_HDR_SIZE),
++					  APR_PKT_VER);
++	pkt.hdr.pkt_size = APR_HDR_SIZE;
++	pkt.hdr.opcode = APRV2_IBASIC_CMD_DESTROY_SESSION;
++
++	apr_send_pkt(v->adev, &pkt);
++}
++
++static const struct of_device_id q6voice_device_id[] = {
++	{ .compatible = "qcom,q6mvm" },
++	{},
++};
++MODULE_DEVICE_TABLE(of, q6voice_device_id);
++
++static struct apr_driver qcom_q6voice_driver = {
++	.probe = q6voice_probe,
++	.remove = q6voice_remove,
++	.callback = q6voice_callback,
++	.driver = {
++		.name = "qcom-q6voice",
++		.of_match_table = of_match_ptr(q6voice_device_id),
++	},
++};
++
++module_apr_driver(qcom_q6voice_driver);
++
++MODULE_DESCRIPTION("Voice services on the Q6 audio DSP");
++MODULE_LICENSE("GPL");
+diff --git a/sound/soc/qcom/Kconfig b/sound/soc/qcom/Kconfig
+index ca7a30ebd..fee3ee7a7 100644
+--- a/sound/soc/qcom/Kconfig
++++ b/sound/soc/qcom/Kconfig
+@@ -118,6 +118,14 @@ config SND_SOC_QDSP6_PRM
+ 	tristate
+ 	select SND_SOC_QDSP6_PRM_LPASS_CLOCKS
+ 
++config SND_SOC_QDSP6_VOICE
++	tristate "SoC ALSA audio driver for QDSP6 voice services"
++	depends on QCOM_APR
++	help
++	 Enable support for the ADSP's voice services - the ones a phone call
++	 runs through.  This is what mainline has never had, and without it a
++	 call connects but carries no audio.
++
+ config SND_SOC_QDSP6
+ 	tristate "SoC ALSA audio driver for QDSP6"
+ 	depends on QCOM_APR
+diff --git a/sound/soc/qcom/qdsp6/Makefile b/sound/soc/qcom/qdsp6/Makefile
+index 26b7c55c9..d938ca073 100644
+--- a/sound/soc/qcom/qdsp6/Makefile
++++ b/sound/soc/qcom/qdsp6/Makefile
+@@ -17,3 +17,4 @@ obj-$(CONFIG_SND_SOC_QDSP6_APM_DAI) += q6apm-dai.o
+ obj-$(CONFIG_SND_SOC_QDSP6_APM_LPASS_DAI) += q6apm-lpass-dais.o
+ obj-$(CONFIG_SND_SOC_QDSP6_PRM) += q6prm.o
+ obj-$(CONFIG_SND_SOC_QDSP6_PRM_LPASS_CLOCKS) += q6prm-clocks.o
++obj-$(CONFIG_SND_SOC_QDSP6_VOICE) += q6voice.o
