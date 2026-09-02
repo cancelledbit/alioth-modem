@@ -123,3 +123,8 @@ proper series with a changelog per patch.
 The patches carry no debugging: the tracing that found all of this, the dead-end
 module knobs and the passive channel listener have been taken out, and what is
 left has been built and run on the phone.
+
+## Licence
+
+GPL-2.0, the same as the kernel the patches are against. The scripts and the
+servers under `tools/` are covered by it too.
