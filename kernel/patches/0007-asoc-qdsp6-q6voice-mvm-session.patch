@@ -1,10 +1,14 @@
 diff --git a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts b/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
 --- a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
 +++ b/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
-@@ -1146,6 +1146,25 @@
- 	};
- };
+@@ -1142,6 +1142,32 @@
  
+ 		codec {
+ 			sound-dai = <&cs35l41_rcv 0>, <&cs35l41_lcv 0>;
++		};
++	};
++};
++
 +/*
 + * The ADSP's voice services.  The SoC device tree declares the services
 + * mainline has drivers for - core, AFE, ASM, ADM - and stops there; MVM is the
@@ -20,18 +24,21 @@ diff --git a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts b/arch/arm64/boot
 +				qcom,protection-domain = "avs/audio",
 +							 "msm/adsp/audio_pd";
 +			};
-+		};
-+	};
-+};
 +
- &slpi {
- 	firmware-name = "qcom/sm8250/xiaomi/alioth/slpi.mbn";
- 	/*
++			service@10 {
++				compatible = "qcom,q6cvs";
++				reg = <10>;
++				qcom,protection-domain = "avs/audio",
++							 "msm/adsp/audio_pd";
++			};
+ 		};
+ 	};
+ };
 diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
 new file mode 100644
 --- /dev/null
 +++ b/sound/soc/qcom/qdsp6/q6voice.c
-@@ -0,0 +1,148 @@
+@@ -0,0 +1,280 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Voice services on the audio DSP.
@@ -44,32 +51,143 @@ new file mode 100644
 + * (q6afe, q6asm, q6adm); these three have never had a driver here, which is why
 + * no mainline phone has audio in a call.
 + *
-+ * This is the first step: open an MVM session and see whether the firmware
-+ * answers.  Nothing is routed yet.
++ * What works so far: the session is created, a stream is created, and the
++ * stream is attached to the session.  Nothing is routed to the codec yet.
 + */
 +
 +#include <linux/kernel.h>
 +#include <linux/module.h>
 +#include <linux/mod_devicetable.h>
 +#include <linux/of.h>
-+#include <linux/platform_device.h>
 +#include <linux/soc/qcom/apr.h>
 +
++/* MVM, the call session */
 +#define VSS_IMVM_CMD_CREATE_FULL_CONTROL_SESSION	0x000110FE
++#define VSS_IMVM_CMD_ATTACH_STREAM			0x0001123C
++/* CVS, the speech stream */
++#define VSS_ISTREAM_CMD_CREATE_FULL_CONTROL_SESSION	0x000110F7
++/* Both take this to be torn down */
 +#define APRV2_IBASIC_CMD_DESTROY_SESSION		0x0001003C
 +
++#define VSS_NETWORK_ID_DEFAULT		0x00010037
++#define VSS_MEDIA_ID_AMR_NB_MODEM	0x00010FC6
++
++/* Stream direction: 2 is transmit and receive */
++#define VSS_ISTREAM_DIRECTION_TX_RX	2
++
 +/* The session name is variable length: the packet size gives its length. */
-+#define MVM_SESSION_NAME	"Voice session"
++#define VOICE_SESSION_NAME	"Voice session"
++
++enum q6voice_state {
++	Q6VOICE_IDLE,
++	Q6VOICE_SESSION_ASKED,
++	Q6VOICE_SESSION_UP,
++	Q6VOICE_STREAM_ASKED,
++	Q6VOICE_STREAM_UP,
++	Q6VOICE_ATTACH_ASKED,
++	Q6VOICE_ATTACHED,
++};
 +
 +struct q6voice {
-+	struct apr_device *adev;
-+	struct device *dev;
++	struct apr_device *mvm;
++	struct apr_device *cvs;
++	u16 mvm_handle;
++	u16 cvs_handle;
++	enum q6voice_state state;
 +};
++
++/*
++ * The three services arrive as three separate devices on the APR bus, and the
++ * work needs all of them at once - a stream is created on one and attached to
++ * another.  They have no common device to hang shared state off, so it lives
++ * here, and each probe fills in its own slot.
++ */
++static struct q6voice voice;
++
++struct cvs_create_stream {
++	__le16 direction;
++	__le32 enc_media_type;
++	__le32 dec_media_type;
++	__le32 network_id;
++	char name[sizeof(VOICE_SESSION_NAME)];
++} __packed;
++
++struct mvm_attach_stream {
++	__le16 handle;
++} __packed;
++
++static int q6voice_send(struct apr_device *adev, u32 opcode, u16 dest_port,
++			const void *payload, size_t payload_size)
++{
++	size_t pkt_size = APR_HDR_SIZE + payload_size;
++	struct apr_pkt *pkt;
++	int ret;
++
++	pkt = kzalloc(pkt_size, GFP_ATOMIC);
++	if (!pkt)
++		return -ENOMEM;
++
++	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
++					   APR_HDR_LEN(APR_HDR_SIZE),
++					   APR_PKT_VER);
++	pkt->hdr.pkt_size = pkt_size;
++	pkt->hdr.src_port = 0;
++	pkt->hdr.dest_port = dest_port;
++	pkt->hdr.token = 0;
++	pkt->hdr.opcode = opcode;
++	if (payload_size)
++		memcpy(pkt->payload, payload, payload_size);
++
++	ret = apr_send_pkt(adev, pkt);
++	kfree(pkt);
++
++	/* apr_send_pkt answers with the number of bytes it queued */
++	return ret < 0 ? ret : 0;
++}
++
++static void q6voice_create_stream(struct q6voice *v)
++{
++	struct cvs_create_stream req = {
++		.direction = cpu_to_le16(VSS_ISTREAM_DIRECTION_TX_RX),
++		.enc_media_type = cpu_to_le32(VSS_MEDIA_ID_AMR_NB_MODEM),
++		.dec_media_type = cpu_to_le32(VSS_MEDIA_ID_AMR_NB_MODEM),
++		.network_id = cpu_to_le32(VSS_NETWORK_ID_DEFAULT),
++	};
++	int ret;
++
++	memcpy(req.name, VOICE_SESSION_NAME, sizeof(VOICE_SESSION_NAME));
++
++	v->state = Q6VOICE_STREAM_ASKED;
++	ret = q6voice_send(v->cvs, VSS_ISTREAM_CMD_CREATE_FULL_CONTROL_SESSION,
++			   0, &req, sizeof(req));
++	if (ret) {
++		dev_err(&v->cvs->dev, "could not ask for a stream: %d\n", ret);
++		v->state = Q6VOICE_SESSION_UP;
++	}
++}
++
++static void q6voice_attach_stream(struct q6voice *v)
++{
++	struct mvm_attach_stream req = { .handle = cpu_to_le16(v->cvs_handle) };
++	int ret;
++
++	v->state = Q6VOICE_ATTACH_ASKED;
++	ret = q6voice_send(v->mvm, VSS_IMVM_CMD_ATTACH_STREAM, v->mvm_handle,
++			   &req, sizeof(req));
++	if (ret) {
++		dev_err(&v->mvm->dev, "could not attach the stream: %d\n", ret);
++		v->state = Q6VOICE_STREAM_UP;
++	}
++}
 +
 +static int q6voice_callback(struct apr_device *adev, struct apr_resp_pkt *data)
 +{
++	struct q6voice *v = &voice;
 +	struct aprv2_ibasic_rsp_result_t *result;
 +	struct apr_hdr *hdr = &data->hdr;
++
++	if (hdr->opcode == APR_RSP_ACCEPTED)
++		return 0;
 +
 +	if (hdr->opcode != APR_BASIC_RSP_RESULT) {
 +		dev_info(&adev->dev, "unsolicited opcode 0x%08x, %d bytes\n",
@@ -84,84 +202,105 @@ new file mode 100644
 +	}
 +
 +	result = data->payload;
-+	dev_info(&adev->dev, "command 0x%08x answered with status %d\n",
-+		 result->opcode, result->status);
++	if (result->status) {
++		dev_err(&adev->dev, "command 0x%08x refused, status %d\n",
++			result->opcode, result->status);
++		return 0;
++	}
++
++	/*
++	 * A created session answers from the port the firmware gave it, and
++	 * that port number is the handle everything else refers to.
++	 */
++	switch (result->opcode) {
++	case VSS_IMVM_CMD_CREATE_FULL_CONTROL_SESSION:
++		v->mvm_handle = hdr->src_port;
++		v->state = Q6VOICE_SESSION_UP;
++		dev_info(&adev->dev, "session up, handle 0x%04x\n",
++			 v->mvm_handle);
++		if (v->cvs)
++			q6voice_create_stream(v);
++		break;
++	case VSS_ISTREAM_CMD_CREATE_FULL_CONTROL_SESSION:
++		v->cvs_handle = hdr->src_port;
++		v->state = Q6VOICE_STREAM_UP;
++		dev_info(&adev->dev, "stream up, handle 0x%04x\n",
++			 v->cvs_handle);
++		q6voice_attach_stream(v);
++		break;
++	case VSS_IMVM_CMD_ATTACH_STREAM:
++		v->state = Q6VOICE_ATTACHED;
++		dev_info(&adev->dev, "stream 0x%04x attached to session 0x%04x\n",
++			 v->cvs_handle, v->mvm_handle);
++		break;
++	default:
++		dev_info(&adev->dev, "command 0x%08x done\n", result->opcode);
++		break;
++	}
 +
 +	return 0;
 +}
 +
-+static int q6voice_create_session(struct q6voice *v)
++static void q6voice_create_session(struct q6voice *v)
 +{
-+	size_t name_len = sizeof(MVM_SESSION_NAME);	/* with the NUL */
-+	size_t pkt_size = APR_HDR_SIZE + name_len;
-+	struct apr_pkt *pkt;
 +	int ret;
 +
-+	pkt = kzalloc(pkt_size, GFP_KERNEL);
-+	if (!pkt)
-+		return -ENOMEM;
-+
-+	pkt->hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
-+					   APR_HDR_LEN(APR_HDR_SIZE),
-+					   APR_PKT_VER);
-+	pkt->hdr.pkt_size = pkt_size;
-+	pkt->hdr.src_port = 0;
-+	pkt->hdr.dest_port = 0;
-+	pkt->hdr.token = 0;
-+	pkt->hdr.opcode = VSS_IMVM_CMD_CREATE_FULL_CONTROL_SESSION;
-+	memcpy(pkt->payload, MVM_SESSION_NAME, name_len);
-+
-+	ret = apr_send_pkt(v->adev, pkt);
-+	kfree(pkt);
-+
-+	/* apr_send_pkt returns the number of bytes it queued */
-+	return ret < 0 ? ret : 0;
++	v->state = Q6VOICE_SESSION_ASKED;
++	ret = q6voice_send(v->mvm, VSS_IMVM_CMD_CREATE_FULL_CONTROL_SESSION, 0,
++			   VOICE_SESSION_NAME, sizeof(VOICE_SESSION_NAME));
++	if (ret) {
++		dev_err(&v->mvm->dev, "could not ask for a session: %d\n", ret);
++		v->state = Q6VOICE_IDLE;
++	}
 +}
 +
 +static int q6voice_probe(struct apr_device *adev)
 +{
-+	struct device *dev = &adev->dev;
-+	struct q6voice *v;
-+	int ret;
++	struct q6voice *v = &voice;
 +
-+	v = devm_kzalloc(dev, sizeof(*v), GFP_KERNEL);
-+	if (!v)
-+		return -ENOMEM;
-+
-+	v->adev = adev;
-+	v->dev = dev;
-+	dev_set_drvdata(dev, v);
-+
-+	dev_info(dev, "MVM service %u on domain %u, version 0x%x\n",
++	dev_info(&adev->dev, "service %u on domain %u, version 0x%x\n",
 +		 adev->svc_id, adev->domain_id, adev->version);
 +
-+	ret = q6voice_create_session(v);
-+	if (ret) {
-+		dev_err(dev, "could not ask for a session: %d\n", ret);
-+		return ret;
-+	}
++	if (of_device_is_compatible(adev->dev.of_node, "qcom,q6mvm"))
++		v->mvm = adev;
++	else
++		v->cvs = adev;
 +
-+	dev_info(dev, "asked the ADSP for a full control session\n");
++	dev_set_drvdata(&adev->dev, v);
++
++	/*
++	 * Whichever of the two is bound last starts the sequence: the stream
++	 * has to be created before it can be attached, and the session before
++	 * either.
++	 */
++	if (v->mvm && v->cvs && v->state == Q6VOICE_IDLE)
++		q6voice_create_session(v);
 +
 +	return 0;
 +}
 +
 +static void q6voice_remove(struct apr_device *adev)
 +{
-+	struct q6voice *v = dev_get_drvdata(&adev->dev);
-+	struct apr_pkt pkt = {};
++	struct q6voice *v = &voice;
 +
-+	pkt.hdr.hdr_field = APR_HDR_FIELD(APR_MSG_TYPE_SEQ_CMD,
-+					  APR_HDR_LEN(APR_HDR_SIZE),
-+					  APR_PKT_VER);
-+	pkt.hdr.pkt_size = APR_HDR_SIZE;
-+	pkt.hdr.opcode = APRV2_IBASIC_CMD_DESTROY_SESSION;
++	if (adev == v->mvm && v->mvm_handle) {
++		q6voice_send(v->mvm, APRV2_IBASIC_CMD_DESTROY_SESSION,
++			     v->mvm_handle, NULL, 0);
++		v->mvm_handle = 0;
++		v->mvm = NULL;
++	} else if (adev == v->cvs && v->cvs_handle) {
++		q6voice_send(v->cvs, APRV2_IBASIC_CMD_DESTROY_SESSION,
++			     v->cvs_handle, NULL, 0);
++		v->cvs_handle = 0;
++		v->cvs = NULL;
++	}
 +
-+	apr_send_pkt(v->adev, &pkt);
++	v->state = Q6VOICE_IDLE;
 +}
 +
 +static const struct of_device_id q6voice_device_id[] = {
 +	{ .compatible = "qcom,q6mvm" },
++	{ .compatible = "qcom,q6cvs" },
 +	{},
 +};
 +MODULE_DEVICE_TABLE(of, q6voice_device_id);
