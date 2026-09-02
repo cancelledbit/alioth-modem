@@ -1,0 +1,12 @@
+[Unit]
+Description=Give the Bluetooth controller a stable address
+After=bluetooth.service
+Wants=bluetooth.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/bin/alioth-bt-addr
+
+[Install]
+WantedBy=multi-user.target

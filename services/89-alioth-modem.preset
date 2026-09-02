@@ -5,3 +5,4 @@ enable alioth-modem.service
 enable alioth-modem-firmware.service
 enable alioth-sim-watch.service
 enable alioth-wlan-mac.service
+enable alioth-bt-addr.service

@@ -3,25 +3,29 @@ maintainer="cancelledbit <akadox@gmail.com>"
 pkgname=device-xiaomi-alioth
 pkgdesc="Xiaomi Poco F3"
 pkgver=0.1
-pkgrel=2
+pkgrel=3
 url="https://github.com/cancelledbit/alioth-modem"
 license="MIT"
 arch="aarch64"
 options="!check !archcheck"
 depends="
 	alioth-modem
+	alsa-ucm-conf
 	firmware-xiaomi-alioth-adsp
 	firmware-xiaomi-alioth-cdsp
 	firmware-xiaomi-alioth-gpu
 	firmware-xiaomi-alioth-modem
 	firmware-xiaomi-alioth-venus
 	linux-firmware-ath11k
+	linux-firmware-cirrus
 	linux-firmware-qca
 	postmarketos-base
 	soc-qcom
 "
 makedepends="devicepkg-dev"
 source="
+	alsa-ucm-conf/alioth.conf
+	alsa-ucm-conf/HiFi.conf
 	deviceinfo
 	modules-initfs
 "
@@ -33,6 +37,18 @@ build() {
 
 package() {
 	devicepkg_package $startdir $pkgname
+
+	# Without a use case configuration the card is there but nothing routes to
+	# it: PulseAudio finds no port and callaudiod skips the card entirely.
+	install -Dm644 "$srcdir"/alioth.conf \
+		"$pkgdir/usr/share/alsa/ucm2/Xiaomi/alioth/alioth.conf"
+	install -Dm644 "$srcdir"/HiFi.conf \
+		"$pkgdir/usr/share/alsa/ucm2/Xiaomi/alioth/HiFi.conf"
+
+	# The file is looked up by the card's long name, not by its short one.
+	mkdir -p "$pkgdir/usr/share/alsa/ucm2/conf.d/sm8250"
+	ln -s ../../Xiaomi/alioth/alioth.conf \
+		"$pkgdir/usr/share/alsa/ucm2/conf.d/sm8250/Xiaomi-POCOF3-alioth-K11AG.conf"
 }
 
 kernel_alioth() {

@@ -23,6 +23,17 @@ part () { readlink -f "/dev/disk/by-partlabel/$1"; }
 	echo "firmware copied out of modem_a"
 }
 
+# The Bluetooth NVM that linux-firmware ships is generic; the one on the phone's
+# own bluetooth partition holds this handset's radio calibration.  The address
+# field in it is empty either way - see alioth-bt-addr.
+[ -s /lib/firmware/qca/htnv20.bin ] || {
+	mkdir -p /mnt/bt /lib/firmware/qca
+	mount -t vfat -o ro "$(part bluetooth_a)" /mnt/bt
+	cp -f /mnt/bt/image/htnv20.bin /mnt/bt/image/htbtfw20.tlv /lib/firmware/qca/
+	umount /mnt/bt
+	echo "bluetooth firmware copied out of bluetooth_a"
+}
+
 # The efs*.bin shipped next to the images are placeholders - they say
 # "IMGEFS- DUMMY-1" inside - and a modem fed those comes up in factory test mode
 # with no IMEI.  The real thing lives in these partitions.

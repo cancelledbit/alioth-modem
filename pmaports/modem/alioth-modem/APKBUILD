@@ -2,7 +2,7 @@
 maintainer="cancelledbit <akadox@gmail.com>"
 pkgname=alioth-modem
 pkgver=0.1
-pkgrel=7
+pkgrel=9
 pkgdesc="Sahara, EFS and bring-up services for the SDX55 modem in the Poco F3"
 url="https://github.com/cancelledbit/alioth-modem"
 arch="aarch64"
@@ -10,6 +10,7 @@ license="MIT"
 options="!check !archcheck"
 depends="
 	bash
+	bluez
 	qmi-utils
 	modemmanager
 	networkmanager
@@ -23,11 +24,13 @@ source="
 	sim-provision.sh
 	sim-watch.sh
 	wlan-mac.sh
+	bt-addr.sh
 	alioth-modem-firmware.sh
 	alioth-modem.service
 	alioth-modem-firmware.service
 	alioth-wlan-mac.service
 	alioth-sim-watch.service
+	alioth-bt-addr.service
 	77-mm-sdx55-qrtr.rules
 	89-alioth-modem.preset
 	sahara_srv.py
@@ -47,6 +50,7 @@ package() {
 	install -Dm755 "$srcdir"/sim-provision.sh "$pkgdir"/usr/bin/alioth-sim-provision
 	install -Dm755 "$srcdir"/sim-watch.sh "$pkgdir"/usr/bin/alioth-sim-watch
 	install -Dm755 "$srcdir"/wlan-mac.sh "$pkgdir"/usr/bin/alioth-wlan-mac
+	install -Dm755 "$srcdir"/bt-addr.sh "$pkgdir"/usr/bin/alioth-bt-addr
 	install -Dm755 "$srcdir"/alioth-modem-firmware.sh \
 		"$pkgdir"/usr/bin/alioth-modem-firmware
 
@@ -55,7 +59,7 @@ package() {
 		install -Dm755 "$srcdir/$f.py" -t "$pkgdir"/usr/share/alioth-modem/
 	done
 
-	for u in alioth-modem alioth-modem-firmware alioth-wlan-mac alioth-sim-watch; do
+	for u in alioth-modem alioth-modem-firmware alioth-wlan-mac alioth-sim-watch alioth-bt-addr; do
 		install -Dm644 "$srcdir/$u.service" -t \
 			"$pkgdir"/usr/lib/systemd/system/
 	done
