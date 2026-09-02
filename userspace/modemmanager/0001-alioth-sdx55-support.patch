@@ -34,21 +34,39 @@ index c14bce3..d4365b1 100644
      if (same) {
          mm_obj_info (self, "SIM %s has not changed: %s",
 diff --git a/src/mm-shared-qmi.c b/src/mm-shared-qmi.c
-index 4fd92cb..bab3441 100644
 --- a/src/mm-shared-qmi.c
 +++ b/src/mm-shared-qmi.c
-@@ -3389,8 +3389,13 @@ uim_get_slot_status_ready (QmiClientUim *client,
+@@ -3390,6 +3390,9 @@
+         return;
+     }
+ 
++    /* Whether the slot picked as active so far actually holds a card */
++    gboolean active_slot_has_card = FALSE;
++
+     ctx->sim_slots = g_ptr_array_new_full (physical_slots->len, (GDestroyNotify) sim_slot_free);
+ 
+     for (i = 0; i < physical_slots->len; i++) {
+@@ -3405,9 +3408,22 @@
+         /* Store active slot info */
          slot_status = &g_array_index (physical_slots, QmiPhysicalSlotStatusSlot, i);
          if (slot_status->physical_slot_status == QMI_UIM_SLOT_STATE_ACTIVE) {
++            gboolean has_card = (slot_status->iccid->len > 0);
++
              sim_active = TRUE;
 -            ctx->active_logical_id = slot_status->logical_slot;
 -            ctx->active_slot_number = i + 1;
-+            /* A dual SIM modem powers both slots and reports both as active,
-+             * so taking the last one seen picks the secondary subscription.
-+             * The primary one is the lowest logical slot; keep that. */
-+            if (!ctx->active_slot_number || slot_status->logical_slot < ctx->active_logical_id) {
++            /* A dual SIM modem powers both slots and reports both as active, so
++             * simply keeping the last one seen picks a slot at random.  Prefer a
++             * slot that holds a usable card - an empty or unresponsive one has no
++             * ICCID - and only among equals prefer the lowest logical slot, which
++             * is the primary subscription. */
++            if (!ctx->active_slot_number ||
++                (has_card && !active_slot_has_card) ||
++                (has_card == active_slot_has_card &&
++                 slot_status->logical_slot < ctx->active_logical_id)) {
 +                ctx->active_logical_id = slot_status->logical_slot;
 +                ctx->active_slot_number = i + 1;
++                active_slot_has_card = has_card;
 +            }
          }
  

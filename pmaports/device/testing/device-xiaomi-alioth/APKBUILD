@@ -1,0 +1,42 @@
+# Reference: <https://postmarketos.org/devicepkg>
+maintainer="cancelledbit <akadox@gmail.com>"
+pkgname=device-xiaomi-alioth
+pkgdesc="Xiaomi Poco F3"
+pkgver=0.1
+pkgrel=2
+url="https://github.com/cancelledbit/alioth-modem"
+license="MIT"
+arch="aarch64"
+options="!check !archcheck"
+depends="
+	alioth-modem
+	firmware-xiaomi-alioth-adsp
+	firmware-xiaomi-alioth-cdsp
+	firmware-xiaomi-alioth-gpu
+	firmware-xiaomi-alioth-modem
+	firmware-xiaomi-alioth-venus
+	linux-firmware-ath11k
+	linux-firmware-qca
+	postmarketos-base
+	soc-qcom
+"
+makedepends="devicepkg-dev"
+source="
+	deviceinfo
+	modules-initfs
+"
+subpackages="$pkgname-kernel-alioth:kernel_alioth"
+
+build() {
+	devicepkg_build $startdir $pkgname
+}
+
+package() {
+	devicepkg_package $startdir $pkgname
+}
+
+kernel_alioth() {
+	pkgdesc="Mainline 6.15 kernel with SDX55 modem support"
+	depends="linux-postmarketos-alioth"
+	devicepkg_subpackage_kernel $startdir $pkgname $subpkgname
+}

@@ -31,7 +31,7 @@ CMD = {1: "HELLO", 2: "HELLO_RESP", 3: "READ_DATA", 4: "END_OF_IMAGE",
        0x13: "RESET_STATE", 0x14: "WRITE_DATA"}
 
 WRITE_CHUNK = 0x400          # MHI_WWAN_MAX_MTU
-WRITEBACK_DIR = "/root/efs_writeback"
+WRITEBACK_DIR = "/var/lib/alioth-modem/efs_writeback"
 MAX_REGION = 16 << 20    # the modem has 256 MB of DDR; this is a sanity cap
 
 

@@ -1,0 +1,5 @@
+panel-samsung-ams667xx01
+phy-qcom-qmp-combo
+nvmem_qcom-spmi-sdam
+qcom_pm8008
+qcom_spmi_haptics

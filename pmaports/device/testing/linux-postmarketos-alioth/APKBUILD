@@ -1,0 +1,80 @@
+# Reference: <https://postmarketos.org/vendorkernel>
+# Kernel config based on: arch/arm64/configs/defconfig + sm8250.config
+maintainer="cancelledbit <akadox@gmail.com>"
+_flavor="postmarketos-alioth"
+pkgname=linux-$_flavor
+pkgver=6.15.1
+pkgrel=0
+pkgdesc="Mainline kernel for Xiaomi Poco F3 (alioth) with SDX55 modem support"
+arch="aarch64"
+_carch="arm64"
+url="https://github.com/mainlining/linux"
+license="GPL-2.0-only"
+options="!strip !check !tracedeps pmb:cross-native"
+makedepends="
+	bash
+	bc
+	bison
+	elfutils-dev
+	findutils
+	flex
+	gmp-dev
+	linux-headers
+	mpc1-dev
+	mpfr-dev
+	openssl-dev
+	pahole
+	perl
+	postmarketos-installkernel
+	python3
+	zstd
+"
+
+# Source: mainlining/linux, branch nikroks/alioth
+_commit="022f7f866a9377c34301e60ba131121c624d2e56"
+_config="config-$_flavor.$arch"
+source="
+	$pkgname-$_commit.tar.gz::https://github.com/mainlining/linux/archive/$_commit.tar.gz
+	$_config
+	0001-arm64-dts-alioth-pcie2-and-esoc.patch
+	0002-bus-mhi-core-bw-scaling-forced-suspend-sbl.patch
+	0003-bus-mhi-pci_generic-sdx55-fusion.patch
+	0004-net-wwan-mhi_wwan_ctrl-efs-channel.patch
+	0005-pci-qcom-linkdown-recovery.patch
+	0006-platform-gpu-audio-pdr.patch
+"
+builddir="$srcdir/linux-$_commit"
+
+prepare() {
+	default_prepare
+	cp "$srcdir/$_config" .config
+}
+
+build() {
+	unset LDFLAGS
+	make ARCH="$_carch" CC="${CC:-gcc}" \
+		KBUILD_BUILD_VERSION="$((pkgrel + 1))-$_flavor"
+}
+
+package() {
+	mkdir -p "$pkgdir"/boot
+
+	install -Dm644 "$builddir/arch/$_carch/boot/Image" \
+		"$pkgdir/boot/vmlinuz"
+
+	if [ -e "$builddir/arch/$_carch/boot/vmlinuz.efi" ]; then
+		install -Dm644 "$builddir/arch/$_carch/boot/vmlinuz.efi" \
+			"$pkgdir/boot/linux.efi"
+	fi
+
+	make modules_install dtbs_install \
+		ARCH="$_carch" \
+		INSTALL_PATH="$pkgdir"/boot/ \
+		INSTALL_MOD_PATH="$pkgdir"/usr \
+		INSTALL_MOD_STRIP=1 \
+		INSTALL_DTBS_PATH="$pkgdir/boot/dtbs"
+	rm -f "$pkgdir"/usr/lib/modules/*/build "$pkgdir"/usr/lib/modules/*/source
+
+	install -D "$builddir"/include/config/kernel.release \
+		"$pkgdir"/usr/share/kernel/$_flavor/kernel.release
+}

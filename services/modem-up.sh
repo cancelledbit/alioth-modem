@@ -16,7 +16,7 @@ APN_USER="${MODEM_APN_USER:--}"
 APN_PASS="${MODEM_APN_PASS:--}"
 EP_IFACE=4
 MUX_ID=1
-EP_TYPE=3            # embedded; pcie is refused with Internal(3)
+EP_TYPE=3            # pcie (libqmi: PCIE=3, EMBEDDED=4)
 LOG=/var/log/modem-up.log
 
 log() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
@@ -24,18 +24,18 @@ log() { echo "[$(date +%T)] $*" | tee -a "$LOG"; }
 mkdir -p /readwrite
 : > "$LOG"
 
-log "starting host services"
-setsid /usr/bin/tqftpserv >> "$LOG" 2>&1 &
-setsid /usr/bin/pd-mapper >> "$LOG" 2>&1 &
-
+# tqftpserv and pd-mapper are services of their own here, and the unit orders
+# us after them - starting a second copy only fights the first for the QRTR
+# service number.
+log "loading the transport modules"
 modprobe qrtr_mhi
 modprobe mhi_wwan_ctrl
 modprobe mhi_net
 modprobe rmnet
 
 log "starting firmware servers"
-setsid python3 -u /root/sahara_srv.py >> "$LOG" 2>&1 &
-setsid python3 -u /root/efs_srv.py    >> "$LOG" 2>&1 &
+setsid python3 -u /usr/share/alioth-modem/sahara_srv.py >> "$LOG" 2>&1 &
+setsid python3 -u /usr/share/alioth-modem/efs_srv.py    >> "$LOG" 2>&1 &
 sleep 1
 
 log "powering the modem up"
@@ -76,6 +76,35 @@ slot_aid () {
             inslot && u && /^\t+A0:/ {gsub(/[: \t]/,""); print; exit}'
 }
 
+# A card that has just been powered up sits in application state 'detected' and
+# never initialises by itself.  It reaches 'ready' only after the slot is power
+# cycled, and only once a provisioning session is bound to it - power cycling
+# before provisioning changes nothing.  Until the application is ready
+# ModemManager sees no SIM at all and gives up with "sim-missing", even though
+# the card status says 'present'.
+sim_ready () {
+    qmicli -d qrtr://3 --uim-get-card-status 2>/dev/null |
+        awk -v want="Slot [$1]:" '
+            index($0, want) {inslot=1; next}
+            inslot && index($0, "Slot [") {exit}
+            inslot && /Application state: .ready./ {print "ready"; exit}'
+}
+
+power_cycle_slot () {
+    local slot=$1 i
+    [ -n "$(sim_ready "$slot")" ] && return 0
+    log "slot $slot: power cycling the card"
+    qmicli -d qrtr://3 --uim-sim-power-off="$slot" >> "$LOG" 2>&1
+    sleep 3
+    qmicli -d qrtr://3 --uim-sim-power-on="$slot" >> "$LOG" 2>&1
+    sleep 8
+    for i in $(seq 1 10); do
+        [ -n "$(sim_ready "$slot")" ] && { log "slot $slot: application ready"; return 0; }
+        sleep 3
+    done
+    log "slot $slot: application never became ready"
+}
+
 # Whichever slots actually hold a card become the primary and secondary
 # subscriptions, in order.  Assuming slot 1 is the primary breaks the moment
 # there is only a card in slot 2 - and a dual SIM modem with one subscription
@@ -97,6 +126,9 @@ provision_slots () {
         log "slot $slot: provisioning $type with aid $aid"
         qmicli -d qrtr://3 --uim-change-provisioning-session=\
 "session-type=$type,activate=yes,slot=$slot,aid=$aid" >> "$LOG" 2>&1
+        # Only now: the card initialises when a session is bound to it, and a
+        # power cycle before that leaves the application in 'detected' forever.
+        power_cycle_slot "$slot"
     done
     [ "$n" -gt 0 ] || log "no SIM found in either slot"
 }
@@ -113,10 +145,10 @@ log "registration: $(qmicli -d qrtr://3 --nas-get-serving-system 2>/dev/null |
 log "preparing the data path"
 qmicli -d qrtr://3 --dpm-open-port="hw-data-ep-type=pcie,hw-data-ep-iface-number=$EP_IFACE,\
 hw-data-rx-id=101,hw-data-tx-id=100" >> "$LOG" 2>&1
-# Two different endpoints, easy to confuse: the data format describes the HOST
-# side and wants pcie, while the WDS bind below describes the MODEM side and
-# wants embedded.  Getting this one wrong leaves QMAP off, and then the session
-# comes up with an address but the downlink never reaches the host.
+# The endpoint type is pcie everywhere - here, and in the WDS bind later.  In
+# libqmi the enum reads PCIE=3, EMBEDDED=4, so the numeric 3 above is pcie, not
+# embedded.  Get this wrong and QMAP stays off: the session then comes up with
+# an address, but the downlink never reaches the host.
 qmicli -d qrtr://3 --wda-set-data-format="link-layer-protocol=raw-ip,ul-protocol=qmap,\
 dl-protocol=qmap,dl-datagram-max-size=31744,dl-max-datagrams=32,ep-type=pcie,\
 ep-iface-number=$EP_IFACE" >> "$LOG" 2>&1
@@ -127,8 +159,8 @@ ip link add rmnet0 link mhi_hwip0 type rmnet mux_id $MUX_ID
 ip link set rmnet0 up mtu 1500
 
 # The bearer itself is NetworkManager's job now: it drives ModemManager, and two
-# owners of the same session only fight.  /root/data_up.py stays around for
-# bringing data up by hand when the GUI is out of the picture.
+# owners of the same session only fight.  data_up.py stays around for bringing
+# data up by hand when the GUI is out of the picture.
 
 # ModemManager is started by systemd long before the modem exists, so it finds
 # nothing; restarting it here is what makes the modem show up in the shell.
@@ -139,15 +171,16 @@ systemctl restart ModemManager
 # setup is non-multiplexed, and in that mode it never binds the WDS client, so
 # Start Network answers InvalidOperation.  Until that is sorted out, raise the
 # session ourselves - SMS, SIM and signal still go through ModemManager.
-# Set MODEM_SELF_DATA=0 to leave data to the GUI instead.
-if [ "${MODEM_SELF_DATA:-1}" = "1" ]; then
+# ModemManager can drive the bearer with the patches in this tree, so this
+# is off by default now; set MODEM_SELF_DATA=1 to raise the session by hand.
+if [ "${MODEM_SELF_DATA:-0}" = "1" ]; then
     ip link set mhi_hwip0 up
     ip link del rmnet0 2>/dev/null
     ip link add rmnet0 link mhi_hwip0 type rmnet mux_id $MUX_ID
     ip link set rmnet0 up mtu 1500
 
     log "starting the data session"
-    setsid python3 -u /root/data_up.py "$APN" "$APN_USER" "$APN_PASS" \
+    setsid python3 -u /usr/share/alioth-modem/data_up.py "$APN" "$APN_USER" "$APN_PASS" \
             $EP_IFACE $MUX_ID $EP_TYPE >> "$LOG" 2>&1 &
 
     for i in $(seq 1 40); do

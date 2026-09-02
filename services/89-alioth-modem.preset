@@ -1,0 +1,6 @@
+# postmarketOS ships "disable *" as the last preset rule, so a unit that is not
+# named here is switched off again by systemctl preset-all when the image is
+# built.  Presets are read in lexical order and the first match wins, hence 89.
+enable alioth-modem.service
+enable alioth-modem-firmware.service
+enable alioth-wlan-mac.service

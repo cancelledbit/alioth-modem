@@ -47,7 +47,7 @@ CMD = {1: "HELLO", 2: "HELLO_RESP", 3: "READ_DATA", 4: "END_OF_IMAGE",
 WRITE_CHUNK = 0x400    # MHI_WWAN_MAX_MTU. The device's max_length from HELLO
                         # bounds command packets, not raw image data.
 
-MEMDUMP_DIR = "/root/mdmdump"
+MEMDUMP_DIR = "/var/lib/alioth-modem/mdmdump"
 MAX_REGION = 4 << 20     # don't try to pull hundreds of MB over a 1 KB channel
 
 PROGRESS_STEP = 1 << 20  # qdsp6sw is 84 MB in 1 KB pieces; log a line per MB so
