@@ -46,7 +46,7 @@ diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
 new file mode 100644
 --- /dev/null
 +++ b/sound/soc/qcom/qdsp6/q6voice.c
-@@ -0,0 +1,412 @@
+@@ -0,0 +1,494 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Voice services on the audio DSP.
@@ -59,16 +59,18 @@ new file mode 100644
 + * (q6afe, q6asm, q6adm); these three have never had a driver here, which is why
 + * no mainline phone has audio in a call.
 + *
-+ * What works so far: MVM hands out a session, CVS hands out a stream, and the
-+ * stream attaches to the session - all three answered with status 0.
++ * The whole sequence works: a session on MVM, a stream on CVS, the stream
++ * attached, the modem allowed to drive it, a vocproc on CVP, enabled, and the
++ * voice started.  Every command comes back with status 0.
 + *
-+ * CVP still refuses.  It is asked for a receive-only session on the tertiary
-+ * TDM the speakers hang off, with the default receive topology, and answers
-+ * status 1 whether the ports are named or left as NONE.  Things left to try,
-+ * in the order they are worth trying: open and start the AFE port first, since
-+ * the firmware may want somewhere that is already running; use the V3 form of
-+ * the command, in case this firmware has dropped V2; and supply an echo
-+ * reference port, which internal mixing is documented not to need but may.
++ * It does not run by itself.  A voice session keeps the DSP busy, and the
++ * machine will then not suspend - it stops dead at "Starting System Suspend"
++ * and never comes back.  So the sequence is started by hand, by writing to
++ *
++ *     /sys/bus/aprbus/devices/<the MVM device>/voice_call
++ *
++ * where 1 starts it and 0 tears it down.  A call should eventually start it,
++ * which is what this is a step towards.
 + */
 +
 +#include <linux/kernel.h>
@@ -80,6 +82,7 @@ new file mode 100644
 +/* MVM, the call session */
 +#define VSS_IMVM_CMD_CREATE_FULL_CONTROL_SESSION	0x000110FE
 +#define VSS_IMVM_CMD_ATTACH_STREAM			0x0001123C
++#define VSS_IMVM_CMD_SET_POLICY_DUAL_CONTROL		0x00011327
 +/* CVS, the speech stream */
 +#define VSS_ISTREAM_CMD_CREATE_FULL_CONTROL_SESSION	0x000110F7
 +/* CVP, the processing that puts the call on the codec */
@@ -125,6 +128,8 @@ new file mode 100644
 +	Q6VOICE_STREAM_UP,
 +	Q6VOICE_ATTACH_ASKED,
 +	Q6VOICE_ATTACHED,
++	Q6VOICE_DUAL_CONTROL_ASKED,
++	Q6VOICE_DUAL_CONTROL_SET,
 +	Q6VOICE_VOCPROC_ASKED,
 +	Q6VOICE_VOCPROC_UP,
 +	Q6VOICE_VOCPROC_ATTACH_ASKED,
@@ -257,9 +262,16 @@ new file mode 100644
 +	struct cvp_create_session req = {
 +		.direction = cpu_to_le16(VSS_IVOCPROC_DIRECTION_RX_TX),
 +		.tx_port_id = cpu_to_le16(AFE_PORT_ID_TERTIARY_TDM_TX_0),
-+		.tx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS_V2),
++		/*
++		 * No topology on either side.  The vendor names real ones, but
++		 * it only gets away with it because its userspace pushes a
++		 * calibration blob first, and loading that blob is what makes
++		 * the firmware pull in the topology modules.  Without the blob
++		 * the modules are not there to be asked for.
++		 */
++		.tx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_NONE),
 +		.rx_port_id = cpu_to_le16(AFE_PORT_ID_TERTIARY_TDM_RX_0),
-+		.rx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT),
++		.rx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_NONE),
 +		.profile_id = cpu_to_le32(VSS_ICOMMON_CAL_NETWORK_ID_NONE),
 +		.vocproc_mode = cpu_to_le32(VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING),
 +		.ec_ref_port_id = cpu_to_le16(VSS_IVOCPROC_PORT_ID_NONE),
@@ -330,8 +342,27 @@ new file mode 100644
 +		v->state = Q6VOICE_ATTACHED;
 +		dev_info(&adev->dev, "stream 0x%04x attached to session 0x%04x\n",
 +			 v->cvs_handle, v->mvm_handle);
-+		if (v->cvp)
-+			q6voice_create_vocproc(v);
++		if (v->cvp) {
++			/*
++			 * A call on the modem is not ours to run: the modem's
++			 * own state machine drives it and the ADSP has to be
++			 * told so, or it will not give out a vocproc at all.
++			 * The vendor driver sends this for every call that is
++			 * not VoIP, and without it the request below comes
++			 * back refused.
++			 */
++			u8 enable = 1;
++
++			v->state = Q6VOICE_DUAL_CONTROL_ASKED;
++			q6voice_send(v->mvm,
++				     VSS_IMVM_CMD_SET_POLICY_DUAL_CONTROL,
++				     v->mvm_handle, &enable, sizeof(enable));
++		}
++		break;
++	case VSS_IMVM_CMD_SET_POLICY_DUAL_CONTROL:
++		v->state = Q6VOICE_DUAL_CONTROL_SET;
++		dev_info(&adev->dev, "the modem may drive the session\n");
++		q6voice_create_vocproc(v);
 +		break;
 +	case VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2: {
 +		struct mvm_attach_stream attach;
@@ -386,6 +417,58 @@ new file mode 100644
 +	}
 +}
 +
++static void q6voice_teardown(struct q6voice *v)
++{
++	if (v->cvp_handle) {
++		q6voice_send(v->cvp, APRV2_IBASIC_CMD_DESTROY_SESSION,
++			     v->cvp_handle, NULL, 0);
++		v->cvp_handle = 0;
++	}
++	if (v->cvs_handle) {
++		q6voice_send(v->cvs, APRV2_IBASIC_CMD_DESTROY_SESSION,
++			     v->cvs_handle, NULL, 0);
++		v->cvs_handle = 0;
++	}
++	if (v->mvm_handle) {
++		q6voice_send(v->mvm, APRV2_IBASIC_CMD_DESTROY_SESSION,
++			     v->mvm_handle, NULL, 0);
++		v->mvm_handle = 0;
++	}
++	v->state = Q6VOICE_IDLE;
++}
++
++static ssize_t voice_call_show(struct device *dev,
++			       struct device_attribute *attr, char *buf)
++{
++	return sysfs_emit(buf, "%d\n", voice.state == Q6VOICE_RUNNING);
++}
++
++static ssize_t voice_call_store(struct device *dev,
++				struct device_attribute *attr,
++				const char *buf, size_t count)
++{
++	struct q6voice *v = &voice;
++	bool start;
++	int ret;
++
++	ret = kstrtobool(buf, &start);
++	if (ret)
++		return ret;
++
++	if (start) {
++		if (!v->mvm || !v->cvs || !v->cvp)
++			return -ENODEV;
++		if (v->state != Q6VOICE_IDLE)
++			return -EBUSY;
++		q6voice_create_session(v);
++	} else {
++		q6voice_teardown(v);
++	}
++
++	return count;
++}
++static DEVICE_ATTR_RW(voice_call);
++
 +static int q6voice_probe(struct apr_device *adev)
 +{
 +	struct q6voice *v = &voice;
@@ -402,13 +485,9 @@ new file mode 100644
 +
 +	dev_set_drvdata(&adev->dev, v);
 +
-+	/*
-+	 * Whichever of the two is bound last starts the sequence: the stream
-+	 * has to be created before it can be attached, and the session before
-+	 * either.
-+	 */
-+	if (v->mvm && v->cvs && v->cvp && v->state == Q6VOICE_IDLE)
-+		q6voice_create_session(v);
++	/* The switch lives on the session's own device */
++	if (adev == v->mvm)
++		device_create_file(&adev->dev, &dev_attr_voice_call);
 +
 +	return 0;
 +}
@@ -416,6 +495,9 @@ new file mode 100644
 +static void q6voice_remove(struct apr_device *adev)
 +{
 +	struct q6voice *v = &voice;
++
++	if (adev == v->mvm)
++		device_remove_file(&adev->dev, &dev_attr_voice_call);
 +
 +	if (adev == v->mvm && v->mvm_handle) {
 +		q6voice_send(v->mvm, APRV2_IBASIC_CMD_DESTROY_SESSION,
