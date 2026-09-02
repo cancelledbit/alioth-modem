@@ -2,7 +2,7 @@
 maintainer="cancelledbit <akadox@gmail.com>"
 pkgname=alioth-modem
 pkgver=0.1
-pkgrel=9
+pkgrel=11
 pkgdesc="Sahara, EFS and bring-up services for the SDX55 modem in the Poco F3"
 url="https://github.com/cancelledbit/alioth-modem"
 arch="aarch64"
@@ -33,6 +33,7 @@ source="
 	alioth-bt-addr.service
 	77-mm-sdx55-qrtr.rules
 	89-alioth-modem.preset
+	10-alioth-retry.conf
 	sahara_srv.py
 	efs_srv.py
 	data_up.py
@@ -75,6 +76,9 @@ package() {
 
 	install -Dm644 "$srcdir"/89-alioth-modem.preset -t \
 		"$pkgdir"/usr/lib/systemd/system-preset/
+
+	install -Dm644 "$srcdir"/10-alioth-retry.conf -t \
+		"$pkgdir"/usr/lib/systemd/system/pd-mapper.service.d/
 
 	install -dm755 "$pkgdir"/var/lib/alioth-modem
 }

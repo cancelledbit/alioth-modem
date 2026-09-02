@@ -40,17 +40,28 @@ done
 # The controller takes the address once and rejects it afterwards, so check
 # before setting - otherwise a restart of this unit reports a failure for
 # something that is already right.
-now=$(btmgmt info 2>/dev/null | grep -m1 -oE "addr [0-9A-Fa-f:]{17}" | cut -d" " -f2 | tr "a-f" "A-F")
-if [ "$now" = "$BT" ]; then
-    echo "hci0 already $BT"
-    exit 0
-fi
+#
+# It also rejects it while it is still coming up: the QCA setup over UART runs
+# for several seconds after the device node appears, and a set during that
+# window fails.  So try a few times, and only while the address is still wrong.
+addr_now () {
+    btmgmt info 2>/dev/null | grep -m1 -oE "addr [0-9A-Fa-f:]{17}" |
+        cut -d" " -f2 | tr "a-f" "A-F"
+}
 
-if btmgmt --index 0 public-addr "$BT" >/dev/null 2>&1; then
-    echo "hci0 set to $BT"
-else
-    # Not worth failing the boot over: Bluetooth still works, it just answers
-    # to whatever generic address the firmware came with.
-    echo "could not set the address, hci0 stays $now"
-fi
+for i in $(seq 1 12); do
+    now=$(addr_now)
+    [ "$now" = "$BT" ] && { echo "hci0 is $BT"; exit 0; }
+    if [ -n "$now" ]; then
+        # The address is only accepted while the controller is powered down.
+        btmgmt --index 0 power off >/dev/null 2>&1
+        btmgmt --index 0 public-addr "$BT" >/dev/null 2>&1
+        btmgmt --index 0 power on >/dev/null 2>&1
+    fi
+    sleep 3
+done
+
+# Not worth failing the boot over: Bluetooth still works, it just answers to
+# whatever generic address the firmware came with.
+echo "could not set the address, hci0 stays $(addr_now)"
 exit 0

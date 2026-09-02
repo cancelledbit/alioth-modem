@@ -33,6 +33,8 @@ install -m 644 services/alioth-wlan-mac.service       /etc/systemd/system/
 install -m 644 services/alioth-sim-watch.service      /etc/systemd/system/
 install -m 644 services/alioth-bt-addr.service        /etc/systemd/system/
 install -m 644 services/udev/77-mm-sdx55-qrtr.rules   /etc/udev/rules.d/
+install -Dm644 services/pd-mapper.service.d/10-alioth-retry.conf \
+    /etc/systemd/system/pd-mapper.service.d/10-alioth-retry.conf
 mkdir -p /var/lib/alioth-modem
 
 say "keeping the modem driver out of autoload"
