@@ -1,13 +1,10 @@
 diff --git a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts b/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
 --- a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
 +++ b/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts
-@@ -1142,6 +1142,32 @@
- 
- 		codec {
- 			sound-dai = <&cs35l41_rcv 0>, <&cs35l41_lcv 0>;
-+		};
-+	};
-+};
+@@ -1145,7 +1145,40 @@
+ 		};
+ 	};
+ };
 +
 +/*
 + * The ADSP's voice services.  The SoC device tree declares the services
@@ -24,21 +21,32 @@ diff --git a/arch/arm64/boot/dts/qcom/sm8250-xiaomi-alioth.dts b/arch/arm64/boot
 +				qcom,protection-domain = "avs/audio",
 +							 "msm/adsp/audio_pd";
 +			};
-+
+ 
 +			service@10 {
 +				compatible = "qcom,q6cvs";
 +				reg = <10>;
 +				qcom,protection-domain = "avs/audio",
 +							 "msm/adsp/audio_pd";
 +			};
- 		};
- 	};
- };
++
++			service@11 {
++				compatible = "qcom,q6cvp";
++				reg = <11>;
++				qcom,protection-domain = "avs/audio",
++							 "msm/adsp/audio_pd";
++			};
++		};
++	};
++};
++
+ &slpi {
+ 	firmware-name = "qcom/sm8250/xiaomi/alioth/slpi.mbn";
+ 	/*
 diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
 new file mode 100644
 --- /dev/null
 +++ b/sound/soc/qcom/qdsp6/q6voice.c
-@@ -0,0 +1,280 @@
+@@ -0,0 +1,402 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Voice services on the audio DSP.
@@ -51,8 +59,16 @@ new file mode 100644
 + * (q6afe, q6asm, q6adm); these three have never had a driver here, which is why
 + * no mainline phone has audio in a call.
 + *
-+ * What works so far: the session is created, a stream is created, and the
-+ * stream is attached to the session.  Nothing is routed to the codec yet.
++ * What works so far: MVM hands out a session, CVS hands out a stream, and the
++ * stream attaches to the session - all three answered with status 0.
++ *
++ * CVP still refuses.  It is asked for a receive-only session on the tertiary
++ * TDM the speakers hang off, with the default receive topology, and answers
++ * status 1 whether the ports are named or left as NONE.  Things left to try,
++ * in the order they are worth trying: open and start the AFE port first, since
++ * the firmware may want somewhere that is already running; use the V3 form of
++ * the command, in case this firmware has dropped V2; and supply an echo
++ * reference port, which internal mixing is documented not to need but may.
 + */
 +
 +#include <linux/kernel.h>
@@ -66,6 +82,11 @@ new file mode 100644
 +#define VSS_IMVM_CMD_ATTACH_STREAM			0x0001123C
 +/* CVS, the speech stream */
 +#define VSS_ISTREAM_CMD_CREATE_FULL_CONTROL_SESSION	0x000110F7
++/* CVP, the processing that puts the call on the codec */
++#define VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2	0x000112BF
++#define VSS_IVOCPROC_CMD_ENABLE				0x000100C6
++#define VSS_IMVM_CMD_ATTACH_VOCPROC			0x0001123E
++#define VSS_IMVM_CMD_START_VOICE			0x00011190
 +/* Both take this to be torn down */
 +#define APRV2_IBASIC_CMD_DESTROY_SESSION		0x0001003C
 +
@@ -74,6 +95,19 @@ new file mode 100644
 +
 +/* Stream direction: 2 is transmit and receive */
 +#define VSS_ISTREAM_DIRECTION_TX_RX	2
++/*
++ * The vocproc directions are named RX, TX and RX_TX in that order and their
++ * values are defined in a header that is not part of this interface; 2 is both,
++ * the same way it is for a stream.
++ */
++#define VSS_IVOCPROC_DIRECTION_RX_TX	2
++#define VSS_IVOCPROC_PORT_ID_NONE	0xFFFF
++#define VSS_IVOCPROC_TOPOLOGY_ID_NONE	0x00010F70
++#define VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT	0x00010F77
++/* The tertiary TDM the speaker amplifiers hang off */
++#define AFE_PORT_ID_TERTIARY_TDM_RX_0	0x9020
++#define VSS_IVOCPROC_DIRECTION_RX	0
++#define VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING	0x00010F7C
 +
 +/* The session name is variable length: the packet size gives its length. */
 +#define VOICE_SESSION_NAME	"Voice session"
@@ -86,13 +120,23 @@ new file mode 100644
 +	Q6VOICE_STREAM_UP,
 +	Q6VOICE_ATTACH_ASKED,
 +	Q6VOICE_ATTACHED,
++	Q6VOICE_VOCPROC_ASKED,
++	Q6VOICE_VOCPROC_UP,
++	Q6VOICE_VOCPROC_ATTACH_ASKED,
++	Q6VOICE_VOCPROC_ATTACHED,
++	Q6VOICE_ENABLE_ASKED,
++	Q6VOICE_ENABLED,
++	Q6VOICE_START_ASKED,
++	Q6VOICE_RUNNING,
 +};
 +
 +struct q6voice {
 +	struct apr_device *mvm;
 +	struct apr_device *cvs;
++	struct apr_device *cvp;
 +	u16 mvm_handle;
 +	u16 cvs_handle;
++	u16 cvp_handle;
 +	enum q6voice_state state;
 +};
 +
@@ -114,6 +158,18 @@ new file mode 100644
 +
 +struct mvm_attach_stream {
 +	__le16 handle;
++} __packed;
++
++struct cvp_create_session {
++	__le16 direction;
++	__le16 tx_port_id;
++	__le32 tx_topology_id;
++	__le16 rx_port_id;
++	__le32 rx_topology_id;
++	__le32 profile_id;
++	__le32 vocproc_mode;
++	__le16 ec_ref_port_id;
++	char name[sizeof(VOICE_SESSION_NAME)];
 +} __packed;
 +
 +static int q6voice_send(struct apr_device *adev, u32 opcode, u16 dest_port,
@@ -180,6 +236,38 @@ new file mode 100644
 +	}
 +}
 +
++static void q6voice_create_vocproc(struct q6voice *v)
++{
++	/*
++	 * Receive only for now, and only the speaker: asking for a session with
++	 * no ports at all is refused outright - the firmware wants somewhere to
++	 * put the audio.  The microphone side needs the capture port of this
++	 * board, which is a separate piece of work.
++	 */
++	struct cvp_create_session req = {
++		.direction = cpu_to_le16(VSS_IVOCPROC_DIRECTION_RX),
++		.tx_port_id = cpu_to_le16(VSS_IVOCPROC_PORT_ID_NONE),
++		.tx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_NONE),
++		.rx_port_id = cpu_to_le16(AFE_PORT_ID_TERTIARY_TDM_RX_0),
++		.rx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT),
++		.profile_id = 0,
++		.vocproc_mode = cpu_to_le32(VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING),
++		.ec_ref_port_id = cpu_to_le16(VSS_IVOCPROC_PORT_ID_NONE),
++	};
++	int ret;
++
++	memcpy(req.name, VOICE_SESSION_NAME, sizeof(VOICE_SESSION_NAME));
++
++	v->state = Q6VOICE_VOCPROC_ASKED;
++	ret = q6voice_send(v->cvp,
++			   VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2,
++			   0, &req, sizeof(req));
++	if (ret) {
++		dev_err(&v->cvp->dev, "could not ask for a vocproc: %d\n", ret);
++		v->state = Q6VOICE_ATTACHED;
++	}
++}
++
 +static int q6voice_callback(struct apr_device *adev, struct apr_resp_pkt *data)
 +{
 +	struct q6voice *v = &voice;
@@ -232,6 +320,40 @@ new file mode 100644
 +		v->state = Q6VOICE_ATTACHED;
 +		dev_info(&adev->dev, "stream 0x%04x attached to session 0x%04x\n",
 +			 v->cvs_handle, v->mvm_handle);
++		if (v->cvp)
++			q6voice_create_vocproc(v);
++		break;
++	case VSS_IVOCPROC_CMD_CREATE_FULL_CONTROL_SESSION_V2: {
++		struct mvm_attach_stream attach;
++
++		v->cvp_handle = hdr->src_port;
++		v->state = Q6VOICE_VOCPROC_UP;
++		dev_info(&adev->dev, "vocproc up, handle 0x%04x\n",
++			 v->cvp_handle);
++
++		attach.handle = cpu_to_le16(v->cvp_handle);
++		v->state = Q6VOICE_VOCPROC_ATTACH_ASKED;
++		q6voice_send(v->mvm, VSS_IMVM_CMD_ATTACH_VOCPROC,
++			     v->mvm_handle, &attach, sizeof(attach));
++		break;
++	}
++	case VSS_IMVM_CMD_ATTACH_VOCPROC:
++		v->state = Q6VOICE_VOCPROC_ATTACHED;
++		dev_info(&adev->dev, "vocproc 0x%04x attached\n", v->cvp_handle);
++		v->state = Q6VOICE_ENABLE_ASKED;
++		q6voice_send(v->cvp, VSS_IVOCPROC_CMD_ENABLE, v->cvp_handle,
++			     NULL, 0);
++		break;
++	case VSS_IVOCPROC_CMD_ENABLE:
++		v->state = Q6VOICE_ENABLED;
++		dev_info(&adev->dev, "vocproc enabled\n");
++		v->state = Q6VOICE_START_ASKED;
++		q6voice_send(v->mvm, VSS_IMVM_CMD_START_VOICE, v->mvm_handle,
++			     NULL, 0);
++		break;
++	case VSS_IMVM_CMD_START_VOICE:
++		v->state = Q6VOICE_RUNNING;
++		dev_info(&adev->dev, "voice started\n");
 +		break;
 +	default:
 +		dev_info(&adev->dev, "command 0x%08x done\n", result->opcode);
@@ -263,8 +385,10 @@ new file mode 100644
 +
 +	if (of_device_is_compatible(adev->dev.of_node, "qcom,q6mvm"))
 +		v->mvm = adev;
-+	else
++	else if (of_device_is_compatible(adev->dev.of_node, "qcom,q6cvs"))
 +		v->cvs = adev;
++	else
++		v->cvp = adev;
 +
 +	dev_set_drvdata(&adev->dev, v);
 +
@@ -273,7 +397,7 @@ new file mode 100644
 +	 * has to be created before it can be attached, and the session before
 +	 * either.
 +	 */
-+	if (v->mvm && v->cvs && v->state == Q6VOICE_IDLE)
++	if (v->mvm && v->cvs && v->cvp && v->state == Q6VOICE_IDLE)
 +		q6voice_create_session(v);
 +
 +	return 0;
@@ -293,6 +417,11 @@ new file mode 100644
 +			     v->cvs_handle, NULL, 0);
 +		v->cvs_handle = 0;
 +		v->cvs = NULL;
++	} else if (adev == v->cvp && v->cvp_handle) {
++		q6voice_send(v->cvp, APRV2_IBASIC_CMD_DESTROY_SESSION,
++			     v->cvp_handle, NULL, 0);
++		v->cvp_handle = 0;
++		v->cvp = NULL;
 +	}
 +
 +	v->state = Q6VOICE_IDLE;
@@ -301,6 +430,7 @@ new file mode 100644
 +static const struct of_device_id q6voice_device_id[] = {
 +	{ .compatible = "qcom,q6mvm" },
 +	{ .compatible = "qcom,q6cvs" },
++	{ .compatible = "qcom,q6cvp" },
 +	{},
 +};
 +MODULE_DEVICE_TABLE(of, q6voice_device_id);
