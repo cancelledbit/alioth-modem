@@ -1,0 +1,4 @@
+# hexagonrpcd-sdsp cannot start at boot: its device node only appears once the
+# SLPI firmware is up, and the unit's ConditionPathExists then fails and the
+# unit is skipped for good.  Start it when the node appears instead.
+SUBSYSTEM=="misc", KERNEL=="fastrpc-sdsp", TAG+="systemd", ENV{SYSTEMD_WANTS}+="hexagonrpcd-sdsp.service"

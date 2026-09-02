@@ -127,7 +127,7 @@ index 03aa88795..f405d51ef 100644
  #define MHI_CHANNEL_CONFIG_UL_FP(ch_num, ch_name, el_count, ev_ring) \
  	{						\
  		.num = ch_num,				\
-@@ -412,6 +496,123 @@ static const struct mhi_pci_dev_info mhi_qcom_sdx55_info = {
+@@ -412,6 +496,131 @@ static const struct mhi_pci_dev_info mhi_qcom_sdx55_info = {
  	.sideband_wake = false,
  };
  
@@ -156,6 +156,14 @@ index 03aa88795..f405d51ef 100644
 +	MHI_CHANNEL_CONFIG_DL(15, "QMI", 32, 0),
 +	MHI_CHANNEL_CONFIG_UL(20, "IPCR", 32, 0),
 +	MHI_CHANNEL_CONFIG_DL_AUTOQUEUE(21, "IPCR", 32, 0),
++	/*
++	 * The modem's own voice audio channels.  Downstream never lets the host
++	 * near them: mhi_satellite hands the pair straight to the ADSP, which
++	 * then runs the call through q6voice.  Mainline has neither, so take
++	 * them here and find out what the channel actually carries.
++	 */
++	MHI_CHANNEL_CONFIG_UL(80, "AUDIO_VOICE_0", 32, 0),
++	MHI_CHANNEL_CONFIG_DL(81, "AUDIO_VOICE_0", 32, 0),
 +	/*
 +	 * Data path, last on purpose: sdx_data=0 drops these two channels and
 +	 * their two rings by shortening the counts.  The modem is a "Fusion"

@@ -2,7 +2,7 @@
 maintainer="cancelledbit <akadox@gmail.com>"
 pkgname=alioth-modem
 pkgver=0.1
-pkgrel=11
+pkgrel=12
 pkgdesc="Sahara, EFS and bring-up services for the SDX55 modem in the Poco F3"
 url="https://github.com/cancelledbit/alioth-modem"
 arch="aarch64"
@@ -32,6 +32,8 @@ source="
 	alioth-sim-watch.service
 	alioth-bt-addr.service
 	77-mm-sdx55-qrtr.rules
+	81-libssc-xiaomi-alioth.rules
+	82-alioth-hexagonrpcd.rules
 	89-alioth-modem.preset
 	10-alioth-retry.conf
 	sahara_srv.py
@@ -65,8 +67,9 @@ package() {
 			"$pkgdir"/usr/lib/systemd/system/
 	done
 
-	install -Dm644 "$srcdir"/77-mm-sdx55-qrtr.rules -t \
-		"$pkgdir"/usr/lib/udev/rules.d/
+	for r in 77-mm-sdx55-qrtr 81-libssc-xiaomi-alioth 82-alioth-hexagonrpcd; do
+		install -Dm644 "$srcdir/$r.rules" -t "$pkgdir"/usr/lib/udev/rules.d/
+	done
 
 	# The bring-up service loads the driver itself, in the right order: the
 	# firmware servers have to be listening before the modem is powered up.

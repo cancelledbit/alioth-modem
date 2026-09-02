@@ -3,7 +3,7 @@ maintainer="cancelledbit <akadox@gmail.com>"
 pkgname=device-xiaomi-alioth
 pkgdesc="Xiaomi Poco F3"
 pkgver=0.1
-pkgrel=3
+pkgrel=4
 url="https://github.com/cancelledbit/alioth-modem"
 license="MIT"
 arch="aarch64"
@@ -15,8 +15,11 @@ depends="
 	firmware-xiaomi-alioth-cdsp
 	firmware-xiaomi-alioth-gpu
 	firmware-xiaomi-alioth-modem
+	firmware-xiaomi-alioth-slpi
 	firmware-xiaomi-alioth-venus
 	linux-firmware-ath11k
+	hexagonrpcd
+	iio-sensor-proxy
 	linux-firmware-cirrus
 	linux-firmware-qca
 	postmarketos-base

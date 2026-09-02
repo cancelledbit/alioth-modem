@@ -23,6 +23,27 @@ part () { readlink -f "/dev/disk/by-partlabel/$1"; }
 	echo "firmware copied out of modem_a"
 }
 
+# What the sensor core needs, in the two places hexagonrpcd serves it from:
+# the DSP's own libraries off the dsp partition, and the sensor registry and
+# calibration out of persist.  The registry is per handset - it carries this
+# phone's accelerometer and gyroscope offsets - so it cannot be packaged either.
+SNS=/usr/share/qcom/sm8250/xiaomi/alioth
+[ -d "$SNS/dsp" ] || {
+	mkdir -p /mnt/dsp "$SNS/dsp"
+	mount -o ro "$(part dsp_a)" /mnt/dsp
+	cp -r /mnt/dsp/sdsp/* "$SNS/dsp"/
+	umount /mnt/dsp
+	echo "sensor DSP libraries copied out of dsp_a"
+}
+
+[ -d "$SNS/sensors" ] || {
+	mkdir -p /mnt/persist "$SNS/sensors"
+	mount -o ro "$(part persist)" /mnt/persist
+	cp -r /mnt/persist/sensors/* "$SNS/sensors"/
+	umount /mnt/persist
+	echo "sensor registry copied out of persist"
+}
+
 # The Bluetooth NVM that linux-firmware ships is generic; the one on the phone's
 # own bluetooth partition holds this handset's radio calibration.  The address
 # field in it is empty either way - see alioth-bt-addr.

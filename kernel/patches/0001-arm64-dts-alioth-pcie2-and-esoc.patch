@@ -104,21 +104,19 @@ index 4652c6241..832343dbb 100644
  &pcieport0 {
  	wifi@0 {
  		compatible = "pci17cb,1101";
-@@ -1115,12 +1148,35 @@ codec {
+@@ -1115,12 +1148,34 @@ codec {
  
  &slpi {
  	firmware-name = "qcom/sm8250/xiaomi/alioth/slpi.mbn";
--	status = "okay";
 +	/*
-+	 * Прошивка поднимается и проходит проверку, но внутри неё стартует
-+	 * пользовательский домен sensor_process, который ждёт закрытый демон
-+	 * датчиков Qualcomm. На mainline его нет, поэтому сторожевой таймер
-+	 * прошивки роняет SLPI каждые ~40 секунд. Сами датчики (акселерометр,
-+	 * гироскоп, магнитометр, приближение) висят за SLPI и без этого демона
-+	 * недоступны всё равно, так что включать его смысла нет.
-+	 * Чтобы вернуть: status = "okay".
++	 * The firmware loads and passes authentication, but a user domain called
++	 * sensor_process starts inside it and waits for a daemon to answer over
++	 * FastRPC.  Left unanswered, the firmware's own watchdog takes SLPI down
++	 * every ~40 seconds.  hexagonrpcd is that daemon: with it running the
++	 * firmware stays up, so the node is enabled.  Without it, expect the
++	 * crash loop and turn this off again.
 +	 */
-+	status = "disabled";
+ 	status = "okay";
  };
  
  &tlmm {
