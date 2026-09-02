@@ -1,0 +1,13 @@
+[Unit]
+Description=Provision SIM cards as they are inserted
+After=alioth-modem.service
+Requires=alioth-modem.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/alioth-sim-watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

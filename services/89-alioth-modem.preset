@@ -3,4 +3,5 @@
 # built.  Presets are read in lexical order and the first match wins, hence 89.
 enable alioth-modem.service
 enable alioth-modem-firmware.service
+enable alioth-sim-watch.service
 enable alioth-wlan-mac.service

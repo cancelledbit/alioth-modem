@@ -57,83 +57,10 @@ done
 log "enabling the radio"
 qmicli -d qrtr://3 --dms-set-operating-mode=online >> "$LOG" 2>&1
 
-# Provisioning needs each card's own application id - a wrong one leaves the
-# application stuck in 'detected', and libqmi then reports a nonsensical
-# "could not power off SIM".  A dual SIM modem needs both subscriptions, or
-# ModemManager sees an inconsistent picture and reprobes the modem forever.
-# Each card has its own application id, and using the wrong one leaves the
-# application stuck in 'detected' while libqmi reports a nonsensical "could not
-# power off SIM".  Read the id out of the card status, per slot.
-#
-# "Slot [1]:" has to be matched literally: as a regex the brackets are a
-# character class and nothing ever matches.
-slot_aid () {
-    qmicli -d qrtr://3 --uim-get-card-status 2>/dev/null |
-        awk -v want="Slot [$1]:" '
-            index($0, want) {inslot=1; next}
-            inslot && index($0, "Slot [") {exit}
-            inslot && /usim/ {u=1}
-            inslot && u && /^\t+A0:/ {gsub(/[: \t]/,""); print; exit}'
-}
-
-# A card that has just been powered up sits in application state 'detected' and
-# never initialises by itself.  It reaches 'ready' only after the slot is power
-# cycled, and only once a provisioning session is bound to it - power cycling
-# before provisioning changes nothing.  Until the application is ready
-# ModemManager sees no SIM at all and gives up with "sim-missing", even though
-# the card status says 'present'.
-sim_ready () {
-    qmicli -d qrtr://3 --uim-get-card-status 2>/dev/null |
-        awk -v want="Slot [$1]:" '
-            index($0, want) {inslot=1; next}
-            inslot && index($0, "Slot [") {exit}
-            inslot && /Application state: .ready./ {print "ready"; exit}'
-}
-
-power_cycle_slot () {
-    local slot=$1 i
-    [ -n "$(sim_ready "$slot")" ] && return 0
-    log "slot $slot: power cycling the card"
-    qmicli -d qrtr://3 --uim-sim-power-off="$slot" >> "$LOG" 2>&1
-    sleep 3
-    qmicli -d qrtr://3 --uim-sim-power-on="$slot" >> "$LOG" 2>&1
-    sleep 8
-    for i in $(seq 1 10); do
-        [ -n "$(sim_ready "$slot")" ] && { log "slot $slot: application ready"; return 0; }
-        sleep 3
-    done
-    log "slot $slot: application never became ready"
-}
-
-# Whichever slots actually hold a card become the primary and secondary
-# subscriptions, in order.  Assuming slot 1 is the primary breaks the moment
-# there is only a card in slot 2 - and a dual SIM modem with one subscription
-# unprovisioned confuses ModemManager into reprobing the modem forever.
-provision_slots () {
-    local i slot aid n=0
-    for i in $(seq 1 20); do
-        [ -n "$(slot_aid 1)$(slot_aid 2)" ] && break
-        sleep 2
-    done
-    for slot in 1 2; do
-        aid=$(slot_aid "$slot")
-        [ -n "$aid" ] || { log "slot $slot: no usim application"; continue; }
-        n=$((n + 1))
-        case $n in
-            1) type=primary-gw-provisioning ;;
-            2) type=secondary-gw-provisioning ;;
-        esac
-        log "slot $slot: provisioning $type with aid $aid"
-        qmicli -d qrtr://3 --uim-change-provisioning-session=\
-"session-type=$type,activate=yes,slot=$slot,aid=$aid" >> "$LOG" 2>&1
-        # Only now: the card initialises when a session is bound to it, and a
-        # power cycle before that leaves the application in 'detected' forever.
-        power_cycle_slot "$slot"
-    done
-    [ "$n" -gt 0 ] || log "no SIM found in either slot"
-}
-
-provision_slots
+# Cards, their application ids and the power cycle each one needs live in
+# their own script: the slot watcher and the operator both need to do exactly
+# this again, later, whenever a card is put in.
+alioth-sim-provision || true
 
 for i in $(seq 1 40); do
     qmicli -d qrtr://3 --nas-get-serving-system 2>/dev/null | grep -q "'registered'" && break

@@ -23,10 +23,13 @@ install -m 755 tools/*.py "$PREFIX"/
 say "services"
 install -m 755 services/modem-up.sh              /usr/bin/alioth-modem-up
 install -m 755 services/wlan-mac.sh              /usr/bin/alioth-wlan-mac
+install -m 755 services/sim-provision.sh         /usr/bin/alioth-sim-provision
+install -m 755 services/sim-watch.sh             /usr/bin/alioth-sim-watch
 install -m 755 services/alioth-modem-firmware.sh /usr/bin/alioth-modem-firmware
 install -m 644 services/alioth-modem.service          /etc/systemd/system/
 install -m 644 services/alioth-modem-firmware.service /etc/systemd/system/
 install -m 644 services/alioth-wlan-mac.service       /etc/systemd/system/
+install -m 644 services/alioth-sim-watch.service      /etc/systemd/system/
 install -m 644 services/udev/77-mm-sdx55-qrtr.rules   /etc/udev/rules.d/
 mkdir -p /var/lib/alioth-modem
 
@@ -38,7 +41,7 @@ say "enabling"
 udevadm control --reload
 systemctl daemon-reload
 systemctl enable ModemManager alioth-modem-firmware.service alioth-modem.service \
-    alioth-wlan-mac.service
+    alioth-wlan-mac.service alioth-sim-watch.service
 
 cat <<'MSG'
 
