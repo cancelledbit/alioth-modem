@@ -46,7 +46,7 @@ diff --git a/sound/soc/qcom/qdsp6/q6voice.c b/sound/soc/qcom/qdsp6/q6voice.c
 new file mode 100644
 --- /dev/null
 +++ b/sound/soc/qcom/qdsp6/q6voice.c
-@@ -0,0 +1,402 @@
+@@ -0,0 +1,412 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Voice services on the audio DSP.
@@ -104,9 +104,14 @@ new file mode 100644
 +#define VSS_IVOCPROC_PORT_ID_NONE	0xFFFF
 +#define VSS_IVOCPROC_TOPOLOGY_ID_NONE	0x00010F70
 +#define VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT	0x00010F77
-+/* The tertiary TDM the speaker amplifiers hang off */
++#define VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS_V2	0x00010F89
++/* "No calibration profile", which is not the same as zero */
++#define VSS_ICOMMON_CAL_NETWORK_ID_NONE	0x0001135E
++/* The tertiary TDM the speaker amplifiers hang off, and its capture side */
 +#define AFE_PORT_ID_TERTIARY_TDM_RX_0	0x9020
-+#define VSS_IVOCPROC_DIRECTION_RX	0
++#define AFE_PORT_ID_TERTIARY_TDM_TX_0	0x9021
++/* The name field is fixed width on the wire even though the header calls it variable */
++#define VSS_SESSION_NAME_LEN	20
 +#define VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING	0x00010F7C
 +
 +/* The session name is variable length: the packet size gives its length. */
@@ -169,7 +174,7 @@ new file mode 100644
 +	__le32 profile_id;
 +	__le32 vocproc_mode;
 +	__le16 ec_ref_port_id;
-+	char name[sizeof(VOICE_SESSION_NAME)];
++	char name[VSS_SESSION_NAME_LEN];
 +} __packed;
 +
 +static int q6voice_send(struct apr_device *adev, u32 opcode, u16 dest_port,
@@ -239,24 +244,29 @@ new file mode 100644
 +static void q6voice_create_vocproc(struct q6voice *v)
 +{
 +	/*
-+	 * Receive only for now, and only the speaker: asking for a session with
-+	 * no ports at all is refused outright - the firmware wants somewhere to
-+	 * put the audio.  The microphone side needs the capture port of this
-+	 * board, which is a separate piece of work.
++	 * Shaped after what the vendor driver sends, because guessing was
++	 * refused: both directions, real ports on both sides, the standard
++	 * topologies, and "no calibration profile" - which has an identifier of
++	 * its own and is not zero.  The name field goes out at its full width,
++	 * which is what makes the packet the size the firmware expects.
++	 *
++	 * The capture port is the tertiary TDM's own: this board has no
++	 * microphone wired up in mainline at all, so it names a port that
++	 * exists rather than one that works.
 +	 */
 +	struct cvp_create_session req = {
-+		.direction = cpu_to_le16(VSS_IVOCPROC_DIRECTION_RX),
-+		.tx_port_id = cpu_to_le16(VSS_IVOCPROC_PORT_ID_NONE),
-+		.tx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_NONE),
++		.direction = cpu_to_le16(VSS_IVOCPROC_DIRECTION_RX_TX),
++		.tx_port_id = cpu_to_le16(AFE_PORT_ID_TERTIARY_TDM_TX_0),
++		.tx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_TX_SM_ECNS_V2),
 +		.rx_port_id = cpu_to_le16(AFE_PORT_ID_TERTIARY_TDM_RX_0),
 +		.rx_topology_id = cpu_to_le32(VSS_IVOCPROC_TOPOLOGY_ID_RX_DEFAULT),
-+		.profile_id = 0,
++		.profile_id = cpu_to_le32(VSS_ICOMMON_CAL_NETWORK_ID_NONE),
 +		.vocproc_mode = cpu_to_le32(VSS_IVOCPROC_VOCPROC_MODE_EC_INT_MIXING),
 +		.ec_ref_port_id = cpu_to_le16(VSS_IVOCPROC_PORT_ID_NONE),
 +	};
 +	int ret;
 +
-+	memcpy(req.name, VOICE_SESSION_NAME, sizeof(VOICE_SESSION_NAME));
++	strscpy(req.name, VOICE_SESSION_NAME, sizeof(req.name));
 +
 +	v->state = Q6VOICE_VOCPROC_ASKED;
 +	ret = q6voice_send(v->cvp,
