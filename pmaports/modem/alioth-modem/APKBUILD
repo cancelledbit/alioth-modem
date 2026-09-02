@@ -2,7 +2,7 @@
 maintainer="cancelledbit <akadox@gmail.com>"
 pkgname=alioth-modem
 pkgver=0.1
-pkgrel=12
+pkgrel=13
 pkgdesc="Sahara, EFS and bring-up services for the SDX55 modem in the Poco F3"
 url="https://github.com/cancelledbit/alioth-modem"
 arch="aarch64"
@@ -42,6 +42,7 @@ source="
 	smssend.py
 	smsrecv.py
 	voicecall.py
+	voiceprobe.py
 	efsdiag.py
 	diagprobe.py
 	mdmwatch.py
@@ -58,7 +59,7 @@ package() {
 		"$pkgdir"/usr/bin/alioth-modem-firmware
 
 	for f in sahara_srv efs_srv data_up smssend smsrecv voicecall efsdiag \
-		diagprobe mdmwatch gpiowatch; do
+		diagprobe mdmwatch gpiowatch voiceprobe; do
 		install -Dm755 "$srcdir/$f.py" -t "$pkgdir"/usr/share/alioth-modem/
 	done
 
