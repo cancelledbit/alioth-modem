@@ -1,5 +1,5 @@
 diff --git a/drivers/bus/mhi/host/pci_generic.c b/drivers/bus/mhi/host/pci_generic.c
-index 03aa88795..7e82a2d49 100644
+index 03aa88795..f405d51ef 100644
 --- a/drivers/bus/mhi/host/pci_generic.c
 +++ b/drivers/bus/mhi/host/pci_generic.c
 @@ -8,12 +8,24 @@
@@ -27,7 +27,7 @@ index 03aa88795..7e82a2d49 100644
  #include <linux/timer.h>
  #include <linux/workqueue.h>
  
-@@ -31,6 +43,80 @@
+@@ -31,6 +43,60 @@
  #define MHI_EDL_DB			91
  #define MHI_EDL_COOKIE			0xEDEDEDED
  
@@ -41,19 +41,6 @@ index 03aa88795..7e82a2d49 100644
 + *
 + * Both probes are off by default and only apply to devices marked sbl_bounce.
 + */
-+#define SDX_WIN_IOVA			0x94000000UL
-+#define SDX_WIN_SIZE			SZ_2M
-+#define SDX_WIN_POISON			0xa5a5dead
-+
-+static unsigned int sdx_dma_bits;
-+module_param(sdx_dma_bits, uint, 0444);
-+MODULE_PARM_DESC(sdx_dma_bits,
-+		 "Override the DMA mask width (0 = per-device default). 30 keeps every IOVA below 0x40000000, where the stock mhi_0_iommu_group pool lives");
-+
-+static bool sdx_win;
-+module_param(sdx_win, bool, 0444);
-+MODULE_PARM_DESC(sdx_win,
-+		 "Map a 2 MB scratch window at IOVA 0x94000000 so the modem's fixed-address writes land in a page of ours instead of faulting");
 +
 +static bool sdx_mm_cycle = true;
 +module_param(sdx_mm_cycle, bool, 0644);
@@ -89,13 +76,6 @@ index 03aa88795..7e82a2d49 100644
 + * that nothing on this controller listens to.  Claim one line and find out
 + * whether the downstream scheme rings through.
 + */
-+#define SDX_BELL_PHYS			0x17a10040UL
-+#define SDX_BELL_SPI			0x340
-+
-+static bool sdx_bell;
-+module_param(sdx_bell, bool, 0444);
-+MODULE_PARM_DESC(sdx_bell,
-+		 "Point the modem's MSI capability at the platform doorbell at 0x17a10040 and claim GIC SPI 0x340, to test whether a real interrupt arrives");
 +
 +static bool sdx_msi = true;
 +module_param(sdx_msi, bool, 0444);
@@ -108,7 +88,7 @@ index 03aa88795..7e82a2d49 100644
  /**
   * struct mhi_pci_dev_info - MHI PCI device specific information
   * @config: MHI controller configuration
-@@ -38,6 +124,7 @@
+@@ -38,6 +104,7 @@
   * @fw: firmware path (if any)
   * @edl: emergency download mode firmware path (if any)
   * @edl_trigger: capable of triggering EDL mode in the device (if supported)
@@ -116,7 +96,7 @@ index 03aa88795..7e82a2d49 100644
   * @bar_num: PCI base address register to use for MHI MMIO register space
   * @dma_data_width: DMA transfer word size (32 or 64 bits)
   * @mru_default: default MRU size for MBIM network packets
-@@ -50,6 +137,7 @@ struct mhi_pci_dev_info {
+@@ -50,6 +117,7 @@ struct mhi_pci_dev_info {
  	const char *fw;
  	const char *edl;
  	bool edl_trigger;
@@ -124,7 +104,7 @@ index 03aa88795..7e82a2d49 100644
  	unsigned int bar_num;
  	unsigned int dma_data_width;
  	unsigned int mru_default;
-@@ -175,6 +263,22 @@ struct mhi_pci_dev_info {
+@@ -175,6 +243,22 @@ struct mhi_pci_dev_info {
  		.doorbell_mode_switch = false,		\
  	}
  
@@ -147,7 +127,7 @@ index 03aa88795..7e82a2d49 100644
  #define MHI_CHANNEL_CONFIG_UL_FP(ch_num, ch_name, el_count, ev_ring) \
  	{						\
  		.num = ch_num,				\
-@@ -412,6 +516,138 @@ static const struct mhi_pci_dev_info mhi_qcom_sdx55_info = {
+@@ -412,6 +496,123 @@ static const struct mhi_pci_dev_info mhi_qcom_sdx55_info = {
  	.sideband_wake = false,
  };
  
@@ -174,21 +154,6 @@ index 03aa88795..7e82a2d49 100644
 +	MHI_CHANNEL_CONFIG_DL(5, "DIAG", 32, 0),
 +	MHI_CHANNEL_CONFIG_UL(14, "QMI", 32, 0),
 +	MHI_CHANNEL_CONFIG_DL(15, "QMI", 32, 0),
-+	/*
-+	 * Stock DT declares both of these next to DIAG.  We do not know their
-+	 * protocols; the point is to see whether the modem pushes its F3 log
-+	 * into either without being asked, since the legacy DIAG mask commands
-+	 * are acknowledged and then ignored.
-+	 */
-+	MHI_CHANNEL_CONFIG_UL(22, "TF", 32, 0),
-+	MHI_CHANNEL_CONFIG_DL_AUTOQUEUE(23, "TF", 32, 0),
-+	/* voice audio: stock DT calls it mhi_chan@80 "AUDIO_VOICE_0" and there
-+	 * is no I2S or TDM link to the modem on this board, so whatever a call
-+	 * carries has to come through here */
-+	MHI_CHANNEL_CONFIG_UL(80, "AUDIO_VOICE_0", 32, 0),
-+	MHI_CHANNEL_CONFIG_DL_AUTOQUEUE(81, "AUDIO_VOICE_0", 32, 0),
-+	MHI_CHANNEL_CONFIG_UL(26, "DCI", 32, 0),
-+	MHI_CHANNEL_CONFIG_DL_AUTOQUEUE(27, "DCI", 32, 0),
 +	MHI_CHANNEL_CONFIG_UL(20, "IPCR", 32, 0),
 +	MHI_CHANNEL_CONFIG_DL_AUTOQUEUE(21, "IPCR", 32, 0),
 +	/*
@@ -286,7 +251,7 @@ index 03aa88795..7e82a2d49 100644
  static const struct mhi_pci_dev_info mhi_qcom_sdx24_info = {
  	.name = "qcom-sdx24",
  	.edl = "qcom/prog_firehose_sdx24.mbn",
-@@ -809,7 +1045,7 @@ static const struct pci_device_id mhi_pci_id_table[] = {
+@@ -809,7 +1010,7 @@ static const struct pci_device_id mhi_pci_id_table[] = {
  	{ PCI_DEVICE(PCI_VENDOR_ID_QCOM, 0x0304),
  		.driver_data = (kernel_ulong_t) &mhi_qcom_sdx24_info },
  	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_QCOM, 0x0306, PCI_VENDOR_ID_QCOM, 0x010c),
@@ -295,7 +260,7 @@ index 03aa88795..7e82a2d49 100644
  	/* EM919x (sdx55), use the same vid:pid as qcom-sdx55m */
  	{ PCI_DEVICE_SUB(PCI_VENDOR_ID_QCOM, 0x0306, 0x18d7, 0x0200),
  		.driver_data = (kernel_ulong_t) &mhi_sierra_em919x_info },
-@@ -924,10 +1160,303 @@ struct mhi_pci_device {
+@@ -924,10 +1125,84 @@ struct mhi_pci_device {
  	struct mhi_controller mhi_cntrl;
  	struct pci_saved_state *pci_state;
  	struct work_struct recovery_work;
@@ -304,115 +269,12 @@ index 03aa88795..7e82a2d49 100644
  	struct timer_list health_check_timer;
  	unsigned long status;
 +
-+	/* sdx_win probe state */
-+	struct iommu_domain *win_domain;
-+	struct page *win_pages;
-+	struct debugfs_blob_wrapper win_blob;
-+	struct dentry *win_dbg;
-+
 +	/* sdx_msi probe state */
 +	struct iommu_domain *msi_domain;
 +	unsigned long msi_iova;
 +
-+	/* sdx_bell probe state */
-+	dma_addr_t bell_dma;
-+	int bell_virq;
-+	unsigned int bell_hits;
  };
  
-+static irqreturn_t sdx_bell_isr(int irq, void *data)
-+{
-+	struct mhi_pci_device *mhi_pdev = data;
-+
-+	mhi_pdev->bell_hits++;
-+	pr_info_ratelimited("MHIDBG sdx_bell: rang, hit %u\n", mhi_pdev->bell_hits);
-+
-+	return IRQ_HANDLED;
-+}
-+
-+static void sdx_bell_setup(struct mhi_pci_device *mhi_pdev, struct pci_dev *pdev)
-+{
-+	struct irq_fwspec fwspec = { };
-+	struct device_node *np;
-+	struct irq_data *idata;
-+	dma_addr_t iova;
-+	u32 hwirq;
-+	u16 ctrl;
-+	int virq, err;
-+
-+	if (!pdev->msi_enabled || !pdev->msi_cap) {
-+		dev_warn(&pdev->dev, "MHIDBG sdx_bell: MSI not configured, skipping\n");
-+		return;
-+	}
-+
-+	np = of_find_compatible_node(NULL, NULL, "arm,gic-v3");
-+	if (!np) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_bell: no GIC node\n");
-+		return;
-+	}
-+	fwspec.fwnode = of_fwnode_handle(np);
-+	fwspec.param_count = 3;
-+	fwspec.param[0] = 0;			/* GIC_SPI */
-+	fwspec.param[1] = SDX_BELL_SPI;
-+	fwspec.param[2] = IRQ_TYPE_EDGE_RISING;
-+	virq = irq_create_fwspec_mapping(&fwspec);
-+	of_node_put(np);
-+	if (virq <= 0) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_bell: cannot map SPI %#x\n", SDX_BELL_SPI);
-+		return;
-+	}
-+
-+	err = request_irq(virq, sdx_bell_isr, 0, "sdx_bell", mhi_pdev);
-+	if (err) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_bell: request_irq(%d) failed: %d\n", virq, err);
-+		irq_dispose_mapping(virq);
-+		return;
-+	}
-+
-+	iova = dma_map_resource(&pdev->dev, SDX_BELL_PHYS & PAGE_MASK, PAGE_SIZE,
-+				DMA_FROM_DEVICE, 0);
-+	if (dma_mapping_error(&pdev->dev, iova)) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_bell: cannot map the doorbell\n");
-+		free_irq(virq, mhi_pdev);
-+		irq_dispose_mapping(virq);
-+		return;
-+	}
-+
-+	idata = irq_get_irq_data(virq);
-+	hwirq = idata ? (u32)irqd_to_hwirq(idata) : 0;
-+
-+	pci_read_config_word(pdev, pdev->msi_cap + PCI_MSI_FLAGS, &ctrl);
-+	pci_write_config_dword(pdev, pdev->msi_cap + PCI_MSI_ADDRESS_LO,
-+			       lower_32_bits(iova) + (SDX_BELL_PHYS & ~PAGE_MASK));
-+	if (ctrl & PCI_MSI_FLAGS_64BIT) {
-+		pci_write_config_dword(pdev, pdev->msi_cap + PCI_MSI_ADDRESS_HI,
-+				       upper_32_bits(iova));
-+		pci_write_config_word(pdev, pdev->msi_cap + PCI_MSI_DATA_64, hwirq);
-+	} else {
-+		pci_write_config_word(pdev, pdev->msi_cap + PCI_MSI_DATA_32, hwirq);
-+	}
-+
-+	mhi_pdev->bell_dma = iova;
-+	mhi_pdev->bell_virq = virq;
-+
-+	dev_info(&pdev->dev,
-+		 "MHIDBG sdx_bell: doorbell %#lx -> iova %pad, SPI %#x = virq %d hwirq %u, capability rewritten\n",
-+		 SDX_BELL_PHYS, &iova, SDX_BELL_SPI, virq, hwirq);
-+}
-+
-+static void sdx_bell_teardown(struct mhi_pci_device *mhi_pdev, struct pci_dev *pdev)
-+{
-+	if (!mhi_pdev->bell_virq)
-+		return;
-+
-+	dev_info(&pdev->dev, "MHIDBG sdx_bell: %u hits total\n", mhi_pdev->bell_hits);
-+
-+	free_irq(mhi_pdev->bell_virq, mhi_pdev);
-+	irq_dispose_mapping(mhi_pdev->bell_virq);
-+	dma_unmap_resource(&pdev->dev, mhi_pdev->bell_dma, PAGE_SIZE, DMA_FROM_DEVICE, 0);
-+	mhi_pdev->bell_virq = 0;
-+}
-+
 +/*
 + * The modem raises an MSI by writing the vector number to the address the host
 + * put in its MSI capability - reversing sbl1.mbn shows its SBL reading that
@@ -432,12 +294,9 @@ index 03aa88795..7e82a2d49 100644
 +	int err;
 +
 +	if (pdev->msix_enabled) {
-+		dev_warn(&pdev->dev,
-+			 "MHIDBG sdx_msi: MSI-X in use, doorbell lives in the table, skipping\n");
 +		return;
 +	}
 +	if (!pdev->msi_enabled || !pdev->msi_cap) {
-+		dev_warn(&pdev->dev, "MHIDBG sdx_msi: MSI not configured, skipping\n");
 +		return;
 +	}
 +
@@ -447,18 +306,14 @@ index 03aa88795..7e82a2d49 100644
 +		pci_read_config_dword(pdev, pdev->msi_cap + PCI_MSI_ADDRESS_HI, &addr_hi);
 +
 +	if (addr_hi) {
-+		dev_warn(&pdev->dev, "MHIDBG sdx_msi: doorbell above 4G (%#x_%08x), skipping\n",
-+			 addr_hi, addr_lo);
 +		return;
 +	}
 +	if (!addr_lo) {
-+		dev_warn(&pdev->dev, "MHIDBG sdx_msi: doorbell address is zero, skipping\n");
 +		return;
 +	}
 +
 +	domain = iommu_get_domain_for_dev(&pdev->dev);
 +	if (!domain) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_msi: no IOMMU domain, skipping\n");
 +		return;
 +	}
 +
@@ -466,15 +321,11 @@ index 03aa88795..7e82a2d49 100644
 +	err = iommu_map(domain, iova, iova, PAGE_SIZE,
 +			IOMMU_READ | IOMMU_WRITE | IOMMU_MMIO, GFP_KERNEL);
 +	if (err) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_msi: iommu_map(%#lx) failed: %d\n", iova, err);
 +		return;
 +	}
 +
 +	mhi_pdev->msi_domain = domain;
 +	mhi_pdev->msi_iova = iova;
-+	dev_info(&pdev->dev,
-+		 "MHIDBG sdx_msi: doorbell %#x identity-mapped (page %#lx), MSI should now land\n",
-+		 addr_lo, iova);
 +}
 +
 +static void sdx_msi_teardown(struct mhi_pci_device *mhi_pdev)
@@ -490,116 +341,11 @@ index 03aa88795..7e82a2d49 100644
 + * Fill the window with a position-dependent pattern, so a later dump tells
 + * apart what the modem wrote from what was never touched.
 + */
-+static void sdx_win_fill(u32 *va)
-+{
-+	unsigned int i;
-+
-+	for (i = 0; i < SDX_WIN_SIZE / sizeof(*va); i++)
-+		va[i] = SDX_WIN_POISON ^ (i * sizeof(*va));
-+}
-+
 +/* Say which words of the window the modem wrote, and show the first of them. */
-+static void sdx_win_report(struct mhi_pci_device *mhi_pdev, struct device *dev)
-+{
-+	const u32 *va = page_address(mhi_pdev->win_pages);
-+	unsigned int n = SDX_WIN_SIZE / sizeof(*va);
-+	unsigned int i, first = UINT_MAX, last = 0, changed = 0;
-+
-+	for (i = 0; i < n; i++) {
-+		if (va[i] == (SDX_WIN_POISON ^ (i * sizeof(*va))))
-+			continue;
-+		if (first == UINT_MAX)
-+			first = i;
-+		last = i;
-+		changed++;
-+	}
-+
-+	if (!changed) {
-+		dev_info(dev, "MHIDBG sdx_win: nothing written\n");
-+		return;
-+	}
-+
-+	dev_info(dev, "MHIDBG sdx_win: %u words written, iova %#lx..%#lx\n",
-+		 changed, SDX_WIN_IOVA + first * sizeof(*va),
-+		 SDX_WIN_IOVA + last * sizeof(*va) + sizeof(*va) - 1);
-+	print_hex_dump(KERN_INFO, "MHIDBG sdx_win: ", DUMP_PREFIX_OFFSET, 16, 4,
-+		       &va[first], min_t(unsigned int, 128, (n - first) * sizeof(*va)),
-+		       false);
-+}
-+
-+static void sdx_win_setup(struct mhi_pci_device *mhi_pdev, struct pci_dev *pdev)
-+{
-+	struct iommu_domain *domain;
-+	phys_addr_t phys, readback;
-+	int err;
-+
-+	domain = iommu_get_domain_for_dev(&pdev->dev);
-+	if (!domain) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_win: no IOMMU domain, skipping\n");
-+		return;
-+	}
-+
-+	mhi_pdev->win_pages = alloc_pages(GFP_KERNEL, get_order(SDX_WIN_SIZE));
-+	if (!mhi_pdev->win_pages) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_win: cannot allocate %u bytes\n",
-+			(unsigned int)SDX_WIN_SIZE);
-+		return;
-+	}
-+
-+	phys = page_to_phys(mhi_pdev->win_pages);
-+	sdx_win_fill(page_address(mhi_pdev->win_pages));
-+
-+	err = iommu_map(domain, SDX_WIN_IOVA, phys, SDX_WIN_SIZE,
-+			IOMMU_READ | IOMMU_WRITE | IOMMU_CACHE, GFP_KERNEL);
-+	if (err) {
-+		dev_err(&pdev->dev, "MHIDBG sdx_win: iommu_map(%#lx) failed: %d\n",
-+			SDX_WIN_IOVA, err);
-+		__free_pages(mhi_pdev->win_pages, get_order(SDX_WIN_SIZE));
-+		mhi_pdev->win_pages = NULL;
-+		return;
-+	}
-+
-+	readback = iommu_iova_to_phys(domain, SDX_WIN_IOVA);
-+	if (readback != phys)
-+		dev_warn(&pdev->dev,
-+			 "MHIDBG sdx_win: readback %pa does not match %pa\n",
-+			 &readback, &phys);
-+
-+	mhi_pdev->win_domain = domain;
-+
-+	mhi_pdev->win_blob.data = page_address(mhi_pdev->win_pages);
-+	mhi_pdev->win_blob.size = SDX_WIN_SIZE;
-+	mhi_pdev->win_dbg = debugfs_create_blob("mhi_sdx_win", 0400, NULL,
-+					       &mhi_pdev->win_blob);
-+
-+	dev_info(&pdev->dev,
-+		 "MHIDBG sdx_win: iova %#lx -> phys %pa, %u bytes, dump at /sys/kernel/debug/mhi_sdx_win\n",
-+		 SDX_WIN_IOVA, &phys, (unsigned int)SDX_WIN_SIZE);
-+}
-+
-+static void sdx_win_teardown(struct mhi_pci_device *mhi_pdev, struct device *dev)
-+{
-+	if (!mhi_pdev->win_pages)
-+		return;
-+
-+	sdx_win_report(mhi_pdev, dev);
-+
-+	debugfs_remove(mhi_pdev->win_dbg);
-+	mhi_pdev->win_dbg = NULL;
-+
-+	if (mhi_pdev->win_domain) {
-+		iommu_unmap(mhi_pdev->win_domain, SDX_WIN_IOVA, SDX_WIN_SIZE);
-+		mhi_pdev->win_domain = NULL;
-+	}
-+
-+	__free_pages(mhi_pdev->win_pages, get_order(SDX_WIN_SIZE));
-+	mhi_pdev->win_pages = NULL;
-+}
-+
  static int mhi_pci_read_reg(struct mhi_controller *mhi_cntrl,
  			    void __iomem *addr, u32 *out)
  {
-@@ -941,6 +1470,9 @@ static void mhi_pci_write_reg(struct mhi_controller *mhi_cntrl,
+@@ -941,6 +1216,9 @@ static void mhi_pci_write_reg(struct mhi_controller *mhi_cntrl,
  	writel(val, addr);
  }
  
@@ -609,7 +355,7 @@ index 03aa88795..7e82a2d49 100644
  static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
  			      enum mhi_callback cb)
  {
-@@ -955,6 +1487,16 @@ static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
+@@ -955,6 +1233,16 @@ static void mhi_pci_status_cb(struct mhi_controller *mhi_cntrl,
  		break;
  	case MHI_CB_EE_MISSION_MODE:
  		pm_runtime_allow(&pdev->dev);
@@ -626,18 +372,15 @@ index 03aa88795..7e82a2d49 100644
  		break;
  	default:
  		break;
-@@ -1066,6 +1608,10 @@ static int mhi_pci_get_irqs(struct mhi_controller *mhi_cntrl,
+@@ -1066,6 +1354,7 @@ static int mhi_pci_get_irqs(struct mhi_controller *mhi_cntrl,
  
  	mhi_cntrl->irq = irq;
  
-+	dev_info(&pdev->dev, "MHIDBG nr_vectors=%d nr_irqs=%d irq0=%d irq1=%d\n",
-+		 nr_vectors, mhi_cntrl->nr_irqs, irq[0],
-+		 mhi_cntrl->nr_irqs > 1 ? irq[1] : -1);
 +
  	return 0;
  }
  
-@@ -1134,6 +1680,33 @@ static void mhi_pci_recovery_work(struct work_struct *work)
+@@ -1134,6 +1423,33 @@ static void mhi_pci_recovery_work(struct work_struct *work)
  		dev_err(&pdev->dev, "Recovery failed: %d\n", err);
  }
  
@@ -671,7 +414,7 @@ index 03aa88795..7e82a2d49 100644
  static void health_check(struct timer_list *t)
  {
  	struct mhi_pci_device *mhi_pdev = from_timer(mhi_pdev, t, health_check_timer);
-@@ -1144,7 +1717,13 @@ static void health_check(struct timer_list *t)
+@@ -1144,7 +1460,13 @@ static void health_check(struct timer_list *t)
  		return;
  
  	if (!mhi_pci_is_alive(mhi_cntrl)) {
@@ -686,7 +429,7 @@ index 03aa88795..7e82a2d49 100644
  		queue_work(system_long_wq, &mhi_pdev->recovery_work);
  		return;
  	}
-@@ -1193,24 +1772,39 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+@@ -1193,24 +1515,29 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
  	const struct mhi_controller_config *mhi_cntrl_config;
  	struct mhi_pci_device *mhi_pdev;
  	struct mhi_controller *mhi_cntrl;
@@ -695,16 +438,6 @@ index 03aa88795..7e82a2d49 100644
  
  	dev_info(&pdev->dev, "MHI PCI device found: %s\n", info->name);
  
-+	if (info->sbl_bounce && sdx_dma_bits) {
-+		if (sdx_dma_bits < 20 || sdx_dma_bits > 64) {
-+			dev_err(&pdev->dev, "MHIDBG sdx_dma_bits=%u out of range, ignored\n",
-+				sdx_dma_bits);
-+		} else {
-+			dma_mask = DMA_BIT_MASK(sdx_dma_bits);
-+			dev_info(&pdev->dev, "MHIDBG sdx_dma_bits=%u: DMA mask forced to %#llx\n",
-+				 sdx_dma_bits, dma_mask);
-+		}
-+	}
 +
  	/* mhi_pdev.mhi_cntrl must be zero-initialized */
  	mhi_pdev = devm_kzalloc(&pdev->dev, sizeof(*mhi_pdev), GFP_KERNEL);
@@ -727,7 +460,7 @@ index 03aa88795..7e82a2d49 100644
  	mhi_cntrl->fw_image = info->fw;
  	mhi_cntrl->edl_image = info->edl;
  
-@@ -1225,19 +1819,40 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+@@ -1225,19 +1552,34 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
  	if (info->edl_trigger)
  		mhi_cntrl->edl_trigger = mhi_pci_generic_edl_trigger;
  
@@ -737,8 +470,6 @@ index 03aa88795..7e82a2d49 100644
 +
 +	if (info->sbl_bounce && sdx_poll >= 0) {
 +		mhi_cntrl->poll_events = sdx_poll;
-+		dev_info(&pdev->dev, "MHIDBG sdx_poll=%d: event ring polling %s\n",
-+			 sdx_poll, sdx_poll ? "on" : "off");
 +	}
 +
  	if (info->sideband_wake) {
@@ -752,34 +483,30 @@ index 03aa88795..7e82a2d49 100644
  	if (err)
  		return err;
  
-+	if (info->sbl_bounce && sdx_win)
-+		sdx_win_setup(mhi_pdev, pdev);
 +
  	err = mhi_pci_get_irqs(mhi_cntrl, mhi_cntrl_config);
  	if (err)
 -		return err;
-+		goto err_win;
++		goto err_msi;
 +
 +	/* after get_irqs: the doorbell is only in the capability once MSI is set up */
 +	if (info->sbl_bounce && sdx_msi)
 +		sdx_msi_setup(mhi_pdev, pdev);
 +
 +	/* before power-up: the modem's SBL reads the capability once it runs */
-+	if (info->sbl_bounce && sdx_bell)
-+		sdx_bell_setup(mhi_pdev, pdev);
  
  	pci_set_drvdata(pdev, mhi_pdev);
  
-@@ -1250,7 +1865,7 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+@@ -1250,7 +1592,7 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
  
  	err = mhi_register_controller(mhi_cntrl, mhi_cntrl_config);
  	if (err)
 -		return err;
-+		goto err_win;
++		goto err_msi;
  
  	/* MHI bus does not power up the controller by default */
  	err = mhi_prepare_for_power_up(mhi_cntrl);
-@@ -1271,7 +1886,7 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+@@ -1271,7 +1613,7 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
  	mod_timer(&mhi_pdev->health_check_timer, jiffies + HEALTH_CHECK_PERIOD);
  
  	/* Only allow runtime-suspend if PME capable (for wakeup) */
@@ -788,18 +515,16 @@ index 03aa88795..7e82a2d49 100644
  		pm_runtime_set_autosuspend_delay(&pdev->dev, 2000);
  		pm_runtime_use_autosuspend(&pdev->dev);
  		pm_runtime_mark_last_busy(&pdev->dev);
-@@ -1284,6 +1899,10 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
+@@ -1284,6 +1626,8 @@ static int mhi_pci_probe(struct pci_dev *pdev, const struct pci_device_id *id)
  	mhi_unprepare_after_power_down(mhi_cntrl);
  err_unregister:
  	mhi_unregister_controller(mhi_cntrl);
-+err_win:
-+	sdx_bell_teardown(mhi_pdev, pdev);
++err_msi:
 +	sdx_msi_teardown(mhi_pdev);
-+	sdx_win_teardown(mhi_pdev, &pdev->dev);
  
  	return err;
  }
-@@ -1295,6 +1914,7 @@ static void mhi_pci_remove(struct pci_dev *pdev)
+@@ -1295,6 +1639,7 @@ static void mhi_pci_remove(struct pci_dev *pdev)
  
  	timer_delete_sync(&mhi_pdev->health_check_timer);
  	cancel_work_sync(&mhi_pdev->recovery_work);
@@ -807,17 +532,15 @@ index 03aa88795..7e82a2d49 100644
  
  	if (test_and_clear_bit(MHI_PCI_DEV_STARTED, &mhi_pdev->status)) {
  		mhi_power_down(mhi_cntrl, true);
-@@ -1306,6 +1926,9 @@ static void mhi_pci_remove(struct pci_dev *pdev)
+@@ -1306,6 +1651,7 @@ static void mhi_pci_remove(struct pci_dev *pdev)
  		pm_runtime_get_noresume(&pdev->dev);
  
  	mhi_unregister_controller(mhi_cntrl);
-+	sdx_bell_teardown(mhi_pdev, pdev);
 +	sdx_msi_teardown(mhi_pdev);
-+	sdx_win_teardown(mhi_pdev, &pdev->dev);
  }
  
  static void mhi_pci_shutdown(struct pci_dev *pdev)
-@@ -1439,7 +2062,8 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
+@@ -1439,7 +1785,8 @@ static int  __maybe_unused mhi_pci_runtime_suspend(struct device *dev)
  		goto pci_suspend; /* Nothing to do at MHI level */
  
  	/* Transition to M3 state */
@@ -827,7 +550,7 @@ index 03aa88795..7e82a2d49 100644
  	if (err) {
  		dev_err(&pdev->dev, "failed to suspend device: %d\n", err);
  		clear_bit(MHI_PCI_DEV_SUSPENDED, &mhi_pdev->status);
-@@ -1501,6 +2125,48 @@ static int __maybe_unused mhi_pci_runtime_resume(struct device *dev)
+@@ -1501,6 +1848,45 @@ static int __maybe_unused mhi_pci_runtime_resume(struct device *dev)
  	return 0;
  }
  
@@ -851,14 +574,12 @@ index 03aa88795..7e82a2d49 100644
 +	/* let the mission mode transition finish before pulling the link down */
 +	msleep(200);
 +
-+	dev_info(dev, "MHIDBG mission mode: forcing a suspend/resume cycle\n");
 +
 +	/* every control channel already has buffers posted by now */
 +	mhi_pdev->force_suspend = true;
 +	err = mhi_pci_runtime_suspend(dev);
 +	mhi_pdev->force_suspend = false;
 +	if (err) {
-+		dev_err(dev, "MHIDBG mission mode: suspend failed: %d\n", err);
 +		return;
 +	}
 +
@@ -870,13 +591,12 @@ index 03aa88795..7e82a2d49 100644
 +	pci_restore_state(pdev);
 +
 +	err = mhi_pci_runtime_resume(dev);
-+	dev_info(dev, "MHIDBG mission mode: resume returned %d\n", err);
 +}
 +
  static int  __maybe_unused mhi_pci_suspend(struct device *dev)
  {
  	pm_runtime_disable(dev);
-@@ -1561,6 +2227,373 @@ static const struct dev_pm_ops mhi_pci_pm_ops = {
+@@ -1561,6 +1947,284 @@ static const struct dev_pm_ops mhi_pci_pm_ops = {
  #endif
  };
  
@@ -900,11 +620,6 @@ index 03aa88795..7e82a2d49 100644
 +		len--;
 +
 +	if (!len) {
-+		dev_info(&mhi_dev->dev, "MHIDBG BL: %zu bytes, nothing printable\n",
-+			 res->bytes_xferd);
-+		print_hex_dump(KERN_INFO, "MHIDBG BL raw: ", DUMP_PREFIX_OFFSET,
-+			       16, 1, buf,
-+			       min_t(size_t, 64, res->bytes_xferd), true);
 +		return;
 +	}
 +
@@ -916,9 +631,6 @@ index 03aa88795..7e82a2d49 100644
 +		       buf[run] != '\r')
 +			run++;
 +
-+		if (run > pos)
-+			dev_info(&mhi_dev->dev, "MHIDBG BL: %.*s\n",
-+				 (int)(run - pos), buf + pos);
 +		pos = run + 1;
 +	}
 +}
@@ -933,74 +645,17 @@ index 03aa88795..7e82a2d49 100644
 +
 +	err = mhi_prepare_for_transfer_autoqueue(mhi_dev);
 +	if (err) {
-+		dev_err(&mhi_dev->dev, "MHIDBG BL: cannot start channel: %d\n", err);
 +		return err;
 +	}
 +
-+	dev_info(&mhi_dev->dev, "MHIDBG BL: bootloader log channel up\n");
 +
 +	return 0;
 +}
 +
 +static void sdx_bl_remove(struct mhi_device *mhi_dev)
 +{
-+	dev_info(&mhi_dev->dev, "MHIDBG BL: channel gone\n");
 +	mhi_unprepare_from_transfer(mhi_dev);
 +}
-+
-+/*
-+ * Passive listener for the channels whose protocol we have not worked out yet.
-+ * Everything lands in dmesg, which ramoops keeps across a hang.
-+ */
-+static void sdx_tap_dl_cb(struct mhi_device *mhi_dev, struct mhi_result *res)
-+{
-+	if (res->transaction_status || !res->buf_addr || !res->bytes_xferd)
-+		return;
-+
-+	dev_info(&mhi_dev->dev, "MHIDBG tap: %zu bytes\n", res->bytes_xferd);
-+	print_hex_dump(KERN_INFO, "MHIDBG tap: ", DUMP_PREFIX_OFFSET, 16, 1,
-+		       res->buf_addr, min_t(size_t, 192, res->bytes_xferd), true);
-+}
-+
-+static void sdx_tap_ul_cb(struct mhi_device *mhi_dev, struct mhi_result *res)
-+{
-+}
-+
-+static int sdx_tap_probe(struct mhi_device *mhi_dev, const struct mhi_device_id *id)
-+{
-+	int err = mhi_prepare_for_transfer_autoqueue(mhi_dev);
-+
-+	if (err) {
-+		dev_err(&mhi_dev->dev, "MHIDBG tap: cannot start channel: %d\n", err);
-+		return err;
-+	}
-+	dev_info(&mhi_dev->dev, "MHIDBG tap: listening\n");
-+
-+	return 0;
-+}
-+
-+static void sdx_tap_remove(struct mhi_device *mhi_dev)
-+{
-+	mhi_unprepare_from_transfer(mhi_dev);
-+}
-+
-+static const struct mhi_device_id sdx_tap_match_table[] = {
-+	{ .chan = "TF" },
-+	{ .chan = "DCI" },
-+	{ .chan = "AUDIO_VOICE_0" },
-+	{ },
-+};
-+
-+static struct mhi_driver sdx_tap_driver = {
-+	.id_table = sdx_tap_match_table,
-+	.probe = sdx_tap_probe,
-+	.remove = sdx_tap_remove,
-+	.ul_xfer_cb = sdx_tap_ul_cb,
-+	.dl_xfer_cb = sdx_tap_dl_cb,
-+	.driver = {
-+		.name = "mhi_sdx_tap",
-+	},
-+};
 +
 +static const struct mhi_device_id sdx_bl_match_table[] = {
 +	{ .chan = "BL" },
@@ -1082,7 +737,6 @@ index 03aa88795..7e82a2d49 100644
 +
 +	sdx_modem_log_lines("before reset");
 +	err = sdx_modem_warm_reset();
-+	pr_info("MHIDBG sdx_reset: modem warm reset -> %d\n", err);
 +	if (err)
 +		return err;
 +
@@ -1117,7 +771,6 @@ index 03aa88795..7e82a2d49 100644
 +static int sdx_pon_probe(struct spmi_device *sdev)
 +{
 +	sdx_pon_sdev = sdev;
-+	dev_info(&sdev->dev, "MHIDBG sdx_reset: modem PMIC claimed, warm reset available\n");
 +
 +	return 0;
 +}
@@ -1152,13 +805,6 @@ index 03aa88795..7e82a2d49 100644
 +	if (!sdx_ctrl)
 +		return;
 +
-+	dev_info(sdx_ctrl->dev,
-+		 "MHIDBG esoc %s: ap2mdm_status=%d ap2mdm_errfatal=%d mdm2ap_status=%d mdm2ap_errfatal=%d\n",
-+		 when,
-+		 gpiod_get_value_cansleep(sdx_ctrl->ap2mdm_status),
-+		 gpiod_get_value_cansleep(sdx_ctrl->ap2mdm_errfatal),
-+		 gpiod_get_value_cansleep(sdx_ctrl->mdm2ap_status),
-+		 gpiod_get_value_cansleep(sdx_ctrl->mdm2ap_errfatal));
 +}
 +
 +static int sdx_modem_ctrl_probe(struct platform_device *pdev)
@@ -1172,24 +818,12 @@ index 03aa88795..7e82a2d49 100644
 +
 +	ctrl->dev = dev;
 +	ctrl->ap2mdm_status = devm_gpiod_get(dev, "ap2mdm-status", GPIOD_OUT_LOW);
-+	if (IS_ERR(ctrl->ap2mdm_status))
-+		return dev_err_probe(dev, PTR_ERR(ctrl->ap2mdm_status),
-+				     "MHIDBG esoc: no ap2mdm-status line\n");
 +
 +	ctrl->ap2mdm_errfatal = devm_gpiod_get(dev, "ap2mdm-errfatal", GPIOD_OUT_LOW);
-+	if (IS_ERR(ctrl->ap2mdm_errfatal))
-+		return dev_err_probe(dev, PTR_ERR(ctrl->ap2mdm_errfatal),
-+				     "MHIDBG esoc: no ap2mdm-errfatal line\n");
 +
 +	ctrl->mdm2ap_status = devm_gpiod_get(dev, "mdm2ap-status", GPIOD_IN);
-+	if (IS_ERR(ctrl->mdm2ap_status))
-+		return dev_err_probe(dev, PTR_ERR(ctrl->mdm2ap_status),
-+				     "MHIDBG esoc: no mdm2ap-status line\n");
 +
 +	ctrl->mdm2ap_errfatal = devm_gpiod_get(dev, "mdm2ap-errfatal", GPIOD_IN);
-+	if (IS_ERR(ctrl->mdm2ap_errfatal))
-+		return dev_err_probe(dev, PTR_ERR(ctrl->mdm2ap_errfatal),
-+				     "MHIDBG esoc: no mdm2ap-errfatal line\n");
 +
 +	sdx_ctrl = ctrl;
 +	sdx_modem_log_lines("claimed");
@@ -1240,9 +874,6 @@ index 03aa88795..7e82a2d49 100644
 +	 * holding pm_mutex; retuning the link will have to be deferred the same
 +	 * way.  For now the answer itself is the point.
 +	 */
-+	dev_info(mhi_cntrl->cntrl_dev,
-+		 "MHIDBG bw: asked for speed %#x width %#x, accepting without retune\n",
-+		 link_info->target_link_speed, link_info->target_link_width);
 +
 +	return 0;
 +}
@@ -1250,7 +881,7 @@ index 03aa88795..7e82a2d49 100644
  static struct pci_driver mhi_pci_driver = {
  	.name		= "mhi-pci-generic",
  	.id_table	= mhi_pci_id_table,
-@@ -1570,7 +2603,46 @@ static struct pci_driver mhi_pci_driver = {
+@@ -1570,7 +2234,37 @@ static struct pci_driver mhi_pci_driver = {
  	.err_handler	= &mhi_pci_err_handler,
  	.driver.pm	= &mhi_pci_pm_ops
  };
@@ -1259,22 +890,14 @@ index 03aa88795..7e82a2d49 100644
 +{
 +	int err;
 +
-+	err = mhi_driver_register(&sdx_tap_driver);
-+	if (err)
-+		return err;
-+
 +	err = mhi_driver_register(&sdx_bl_driver);
 +	if (err)
 +		return err;
 +
 +	/* the modem PMIC is optional: without it we just lose the warm reset */
 +	err = spmi_driver_register(&sdx_pon_driver);
-+	if (err)
-+		pr_warn("MHIDBG sdx_reset: no modem PMIC driver: %d\n", err);
 +
 +	err = platform_driver_register(&sdx_modem_ctrl_driver);
-+	if (err)
-+		pr_warn("MHIDBG esoc: no modem control driver: %d\n", err);
 +
 +	err = pci_register_driver(&mhi_pci_driver);
 +	if (err) {
@@ -1292,7 +915,6 @@ index 03aa88795..7e82a2d49 100644
 +	platform_driver_unregister(&sdx_modem_ctrl_driver);
 +	spmi_driver_unregister(&sdx_pon_driver);
 +	mhi_driver_unregister(&sdx_bl_driver);
-+	mhi_driver_unregister(&sdx_tap_driver);
 +}
 +module_exit(mhi_pci_exit);
  

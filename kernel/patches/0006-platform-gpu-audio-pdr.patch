@@ -1,448 +1,101 @@
+diff --git a/drivers/firmware/qcom/qcom_scm-smc.c b/drivers/firmware/qcom/qcom_scm-smc.c
+index 574930729..dc340a83f 100644
+--- a/drivers/firmware/qcom/qcom_scm-smc.c
++++ b/drivers/firmware/qcom/qcom_scm-smc.c
+@@ -210,6 +210,7 @@ int __scm_smc_call(struct device *dev, const struct qcom_scm_desc *desc,
+ 		res->result[2] = smc_res.a3;
+ 	}
+ 
++
+ 	return (long)smc_res.a0 ? qcom_scm_remap_error(smc_res.a0) : 0;
+ 
+ }
+diff --git a/drivers/firmware/qcom/qcom_scm.c b/drivers/firmware/qcom/qcom_scm.c
+index fc4d67e4c..bfdfea19a 100644
+--- a/drivers/firmware/qcom/qcom_scm.c
++++ b/drivers/firmware/qcom/qcom_scm.c
+@@ -634,6 +634,7 @@ int qcom_scm_pas_init_image(u32 peripheral, const void *metadata, size_t size,
+ 		ctx->size = size;
+ 	}
+ 
++
+ 	return ret ? : res.result[0];
+ }
+ EXPORT_SYMBOL_GPL(qcom_scm_pas_init_image);
 diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
-index c8711938a..c7dc324bc 100644
+index c8711938a..8b8c47683 100644
 --- a/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
 +++ b/drivers/gpu/drm/msm/adreno/a6xx_gmu.c
-@@ -18,6 +18,8 @@
+@@ -18,6 +18,7 @@
  #include "msm_gpu_trace.h"
  #include "msm_mmu.h"
  
-+#define GMUTRACE(fmt, ...) pr_info("GMUTRACE " fmt "\n", ##__VA_ARGS__)
 +
  static void a6xx_gmu_fault(struct a6xx_gmu *gmu)
  {
  	struct a6xx_gpu *a6xx_gpu = container_of(gmu, struct a6xx_gpu, gmu);
-@@ -173,10 +175,17 @@ void a6xx_gmu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
- 		return;
- 
+@@ -175,8 +176,9 @@ void a6xx_gmu_set_freq(struct msm_gpu *gpu, struct dev_pm_opp *opp,
  	if (!gmu->legacy) {
-+		GMUTRACE("set_freq: hfi_set_freq(perf=%u bw=%u freq=%lu)",
-+			 perf_index, bw_index, gpu_freq);
  		a6xx_hfi_set_freq(gmu, perf_index, bw_index);
-+		GMUTRACE("set_freq: hfi_set_freq вернулся");
  		/* With Bandwidth voting, we now vote for all resources, so skip OPP set */
 -		if (!bw_index)
 +		if (!bw_index) {
-+			GMUTRACE("set_freq: dev_pm_opp_set_opp");
  			dev_pm_opp_set_opp(&gpu->pdev->dev, opp);
-+			GMUTRACE("set_freq: dev_pm_opp_set_opp вернулся");
 +		}
-+		GMUTRACE("set_freq: готово");
  		return;
  	}
  
-@@ -545,6 +554,7 @@ static void a6xx_rpmh_stop(struct a6xx_gmu *gmu)
- 	int ret;
- 	u32 val;
+@@ -1191,7 +1193,6 @@ static void a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
  
-+	GMUTRACE("rpmh_stop: vhod");
- 	gmu_write(gmu, REG_A6XX_GMU_RSCC_CONTROL_REQ, 1);
- 
- 	ret = gmu_poll_timeout_rscc(gmu, REG_A6XX_GPU_RSCC_RSC_STATUS0_DRV0,
-@@ -553,6 +563,7 @@ static void a6xx_rpmh_stop(struct a6xx_gmu *gmu)
- 		DRM_DEV_ERROR(gmu->dev, "Unable to power off the GPU RSC\n");
- 
- 	gmu_write(gmu, REG_A6XX_GMU_RSCC_CONTROL_REQ, 0);
-+	GMUTRACE("rpmh_stop: vyhod");
- }
- 
- static inline void pdc_write(void __iomem *ptr, u32 offset, u32 value)
-@@ -851,15 +862,18 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
- 			"GMU firmware is not loaded\n"))
- 			return -ENOENT;
- 
-+		GMUTRACE("fw_start: rpmh_start");
- 		ret = a6xx_rpmh_start(gmu);
- 		if (ret)
- 			return ret;
- 
-+		GMUTRACE("fw_start: fw_load");
- 		ret = a6xx_gmu_fw_load(gmu);
- 		if (ret)
- 			return ret;
- 	}
- 
-+	GMUTRACE("fw_start: gmu_write block");
- 	/* Clear init result to make sure we are getting a fresh value */
- 	gmu_write(gmu, REG_A6XX_GMU_CM3_FW_INIT_RESULT, 0);
- 	gmu_write(gmu, REG_A6XX_GMU_CM3_BOOT_CONFIG, 0x02);
-@@ -914,14 +928,17 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
- 			  gmu->log.iova | (gmu->log.size / SZ_4K - 1));
- 	}
- 
-+	GMUTRACE("fw_start: power_config");
- 	/* Set up the lowest idle level on the GMU */
- 	a6xx_gmu_power_config(gmu);
- 
-+	GMUTRACE("fw_start: gmu_start");
- 	ret = a6xx_gmu_start(gmu);
- 	if (ret)
- 		return ret;
- 
- 	if (gmu->legacy) {
-+		GMUTRACE("fw_start: gfx_rail_on");
- 		ret = a6xx_gmu_gfx_rail_on(gmu);
- 		if (ret)
- 			return ret;
-@@ -929,11 +946,13 @@ static int a6xx_gmu_fw_start(struct a6xx_gmu *gmu, unsigned int state)
- 
- 	/* Enable SPTP_PC if the CPU is responsible for it */
- 	if (gmu->idle_level < GMU_IDLE_STATE_SPTP) {
-+		GMUTRACE("fw_start: sptprac_enable");
- 		ret = a6xx_sptprac_enable(gmu);
- 		if (ret)
- 			return ret;
- 	}
- 
-+	GMUTRACE("fw_start: hfi_start");
- 	ret = a6xx_gmu_hfi_start(gmu);
- 	if (ret)
- 		return ret;
-@@ -1035,7 +1054,9 @@ static void a6xx_gmu_set_initial_freq(struct msm_gpu *gpu, struct a6xx_gmu *gmu)
- 		return;
- 
- 	gmu->freq = 0; /* so a6xx_gmu_set_freq() doesn't exit early */
-+	GMUTRACE("set_initial_freq: freq=%lu", gpu_freq);
- 	a6xx_gmu_set_freq(gpu, gpu_opp, false);
-+	GMUTRACE("set_initial_freq: вернулся");
- 	dev_pm_opp_put(gpu_opp);
- }
- 
-@@ -1063,6 +1084,7 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
- 		return -EINVAL;
- 
- 	gmu->hung = false;
-+	GMUTRACE("resume: vhod");
- 
- 	/* Notify AOSS about the ACD state (unimplemented for now => disable it) */
- 	if (!IS_ERR(gmu->qmp)) {
-@@ -1072,6 +1094,7 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
- 			dev_err(gmu->dev, "failed to send GPU ACD state\n");
- 	}
- 
-+	GMUTRACE("resume: pm_runtime_get_sync(gmu->dev)");
- 	/* Turn on the resources */
- 	pm_runtime_get_sync(gmu->dev);
- 
-@@ -1080,9 +1103,11 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
- 	 * will make sure that the refcounting is correct in case we need to
- 	 * bring down the GX after a GMU failure
- 	 */
-+	GMUTRACE("resume: gxpd get");
- 	if (!IS_ERR_OR_NULL(gmu->gxpd))
- 		pm_runtime_get_sync(gmu->gxpd);
- 
-+	GMUTRACE("resume: clk_set_rate + clk_bulk_enable");
- 	/* Use a known rate to bring up the GMU */
- 	clk_set_rate(gmu->core_clk, 200000000);
- 	clk_set_rate(gmu->hub_clk, adreno_is_a740_family(adreno_gpu) ?
-@@ -1094,14 +1119,17 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
- 		return ret;
- 	}
- 
-+	GMUTRACE("resume: set_initial_bw");
- 	/* Set the bus quota to a reasonable value for boot */
- 	a6xx_gmu_set_initial_bw(gpu, gmu);
- 
-+	GMUTRACE("resume: enable gmu irq");
- 	/* Enable the GMU interrupt */
- 	gmu_write(gmu, REG_A6XX_GMU_AO_HOST_INTERRUPT_CLR, ~0);
- 	gmu_write(gmu, REG_A6XX_GMU_AO_HOST_INTERRUPT_MASK, ~A6XX_GMU_IRQ_MASK);
- 	enable_irq(gmu->gmu_irq);
- 
-+	GMUTRACE("resume: cold/warm boot");
- 	/* Check to see if we are doing a cold or warm boot */
- 	if (adreno_is_a7xx(adreno_gpu)) {
- 		status = a6xx_llc_read(a6xx_gpu, REG_A7XX_CX_MISC_TCM_RET_CNTL) == 1 ?
-@@ -1117,10 +1145,12 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
- 		status = GMU_COLD_BOOT;
- 	}
- 
-+	GMUTRACE("resume: fw_start(state=%d)", status);
- 	ret = a6xx_gmu_fw_start(gmu, status);
- 	if (ret)
- 		goto out;
- 
-+	GMUTRACE("resume: hfi_start");
- 	ret = a6xx_hfi_start(gmu, status);
- 	if (ret)
- 		goto out;
-@@ -1134,6 +1164,7 @@ int a6xx_gmu_resume(struct a6xx_gpu *a6xx_gpu)
- 	enable_irq(gmu->hfi_irq);
- 
- 	/* Set the GPU to the current freq */
-+	GMUTRACE("resume: set_initial_freq");
- 	a6xx_gmu_set_initial_freq(gpu, gmu);
- 
- out:
-@@ -1183,15 +1214,17 @@ static void a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
- 		a6xx_gmu_clear_oob(&a6xx_gpu->gmu, GMU_OOB_GPU_SET);
- 	}
- 
-+	GMUTRACE("shutdown: wait_for_idle");
- 	ret = a6xx_gmu_wait_for_idle(gmu);
- 
- 	/* If the GMU isn't responding assume it is hung */
- 	if (ret)
- 		goto force_off;
- 
-+	GMUTRACE("shutdown: bus_clear");
  	a6xx_bus_clear_pending_transactions(adreno_gpu, a6xx_gpu->hung);
  
 -	/* tell the GMU we want to slumber */
-+	GMUTRACE("shutdown: notify_slumber");
  	ret = a6xx_gmu_notify_slumber(gmu);
  	if (ret)
  		goto force_off;
-@@ -1214,14 +1247,18 @@ static void a6xx_gmu_shutdown(struct a6xx_gmu *gmu)
- 			gmu_read(gmu,
- 				REG_A6XX_GPU_GMU_AO_GPU_CX_BUSY_STATUS2));
- 
-+	GMUTRACE("shutdown: hfi_stop");
- 	/* Turn off HFI */
- 	a6xx_hfi_stop(gmu);
- 
- 	/* Stop the interrupts and mask the hardware */
-+	GMUTRACE("shutdown: irq_disable");
- 	a6xx_gmu_irq_disable(gmu);
- 
- 	/* Tell RPMh to power off the GPU */
-+	GMUTRACE("shutdown: rpmh_stop");
- 	a6xx_rpmh_stop(gmu);
-+	GMUTRACE("shutdown: zaversheno");
- 
- 	return;
- 
 diff --git a/drivers/gpu/drm/msm/adreno/a6xx_gpu.c b/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
-index 242d02d48..0959af31c 100644
+index 242d02d48..47f260af5 100644
 --- a/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
 +++ b/drivers/gpu/drm/msm/adreno/a6xx_gpu.c
-@@ -14,6 +14,8 @@
+@@ -14,6 +14,7 @@
  #include <linux/pm_domain.h>
  #include <linux/soc/qcom/llcc-qcom.h>
  
-+#define GMUTRACE(fmt, ...) pr_info("GMUTRACE " fmt "\n", ##__VA_ARGS__)
 +
  #define GPU_PAS_ID 13
  
  static inline bool _a6xx_check_idle(struct msm_gpu *gpu)
-@@ -1000,7 +1002,9 @@ static int a6xx_zap_shader_init(struct msm_gpu *gpu)
- 	if (loaded)
- 		return 0;
- 
-+	GMUTRACE("ucode_load: zap_shader_load(pas=%d)", GPU_PAS_ID);
- 	ret = adreno_zap_shader_load(gpu, GPU_PAS_ID);
-+	GMUTRACE("ucode_load: zap_shader_load -> %d", ret);
- 
- 	loaded = !ret;
- 	return ret;
-@@ -1044,6 +1048,7 @@ static int a6xx_zap_shader_init(struct msm_gpu *gpu)
- 
- static int hw_init(struct msm_gpu *gpu)
- {
-+	GMUTRACE("hw_init: vhod");
- 	struct adreno_gpu *adreno_gpu = to_adreno_gpu(gpu);
- 	struct a6xx_gpu *a6xx_gpu = to_a6xx_gpu(adreno_gpu);
- 	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
-@@ -1103,7 +1108,9 @@ static int hw_init(struct msm_gpu *gpu)
- 	}
- 
- 	/* enable hardware clockgating */
-+	GMUTRACE("hw_init: set_hwcg");
- 	a6xx_set_hwcg(gpu, true);
-+	GMUTRACE("hw_init: set_hwcg ok");
- 
- 	/* VBIF/GBIF start*/
- 	if (adreno_is_a610_family(adreno_gpu) ||
-@@ -1338,6 +1345,7 @@ static int hw_init(struct msm_gpu *gpu)
- 		gpu->rb[i]->cur_ctx_seqno = 0;
- 
- 	/* Enable the SQE_to start the CP engine */
-+	GMUTRACE("hw_init: CP_SQE_CNTL=1");
- 	gpu_write(gpu, REG_A6XX_CP_SQE_CNTL, 1);
- 
- 	if (adreno_is_a7xx(adreno_gpu) && !a6xx_gpu->pwrup_reglist_emitted) {
-@@ -1345,7 +1353,9 @@ static int hw_init(struct msm_gpu *gpu)
- 		a6xx_gpu->pwrup_reglist_emitted = true;
- 	}
- 
-+	GMUTRACE("hw_init: cp_init");
- 	ret = adreno_is_a7xx(adreno_gpu) ? a7xx_cp_init(gpu) : a6xx_cp_init(gpu);
-+	GMUTRACE("hw_init: cp_init -> %d", ret);
- 	if (ret)
- 		goto out;
- 
-@@ -1356,12 +1366,16 @@ static int hw_init(struct msm_gpu *gpu)
- 	 * guessed wrong then access to the RBBM_SECVID_TRUST_CNTL register will
- 	 * be blocked and a permissions violation will soon follow.
- 	 */
-+	GMUTRACE("hw_init: zap_shader_init");
- 	ret = a6xx_zap_shader_init(gpu);
-+	GMUTRACE("hw_init: zap_shader_init -> %d", ret);
- 	if (!ret) {
- 		OUT_PKT7(gpu->rb[0], CP_SET_SECURE_MODE, 1);
- 		OUT_RING(gpu->rb[0], 0x00000000);
- 
-+		GMUTRACE("hw_init: CP_SET_SECURE_MODE, flush");
- 		a6xx_flush(gpu, gpu->rb[0]);
-+		GMUTRACE("hw_init: zhdu a6xx_idle");
- 		if (!a6xx_idle(gpu, gpu->rb[0]))
- 			return -EINVAL;
- 	} else if (ret == -ENODEV) {
-@@ -1380,6 +1394,7 @@ static int hw_init(struct msm_gpu *gpu)
- 	}
- 
- out:
-+	GMUTRACE("hw_init: out, ret=%d", ret);
- 	if (adreno_has_gmu_wrapper(adreno_gpu))
- 		return ret;
- 
-@@ -1392,6 +1407,7 @@ static int hw_init(struct msm_gpu *gpu)
- 	 */
- 	a6xx_gmu_clear_oob(&a6xx_gpu->gmu, GMU_OOB_GPU_SET);
- 
-+	GMUTRACE("hw_init: clear_oob(GPU_SET) proshel");
- 	if (a6xx_gpu->gmu.legacy) {
- 		/* Take the GMU out of its special boot mode */
- 		a6xx_gmu_clear_oob(&a6xx_gpu->gmu, GMU_OOB_BOOT_SLUMBER);
-@@ -2126,23 +2142,32 @@ static int a6xx_pm_suspend(struct msm_gpu *gpu)
- 	struct a6xx_gmu *gmu = &a6xx_gpu->gmu;
- 	int i;
- 
-+	GMUTRACE("pm_suspend: vhod");
- 	trace_msm_gpu_suspend(0);
- 
- 	msm_devfreq_suspend(gpu);
-+	GMUTRACE("pm_suspend: devfreq_suspend ok");
- 
- 	mutex_lock(&a6xx_gpu->gmu.lock);
- 
- 	/* Drain the outstanding traffic on memory buses */
-+	GMUTRACE("pm_suspend: bus_clear_pending");
- 	a6xx_bus_clear_pending_transactions(adreno_gpu, true);
-+	GMUTRACE("pm_suspend: bus_clear ok");
- 
- 	if (adreno_is_a619_holi(adreno_gpu))
- 		a6xx_sptprac_disable(gmu);
- 
-+	GMUTRACE("pm_suspend: clk_bulk_disable");
- 	clk_bulk_disable_unprepare(gpu->nr_clocks, gpu->grp_clks);
- 
-+	GMUTRACE("pm_suspend: put_sync(gxpd) -- gasim GX");
- 	pm_runtime_put_sync(gmu->gxpd);
-+	GMUTRACE("pm_suspend: opp_set_opp(NULL) -- snimaem golosa rpmhpd");
- 	dev_pm_opp_set_opp(&gpu->pdev->dev, NULL);
-+	GMUTRACE("pm_suspend: put_sync(gmu->dev)");
- 	pm_runtime_put_sync(gmu->dev);
-+	GMUTRACE("pm_suspend: vse tri shaga proshli");
- 
- 	mutex_unlock(&a6xx_gpu->gmu.lock);
- 
 diff --git a/drivers/gpu/drm/msm/adreno/adreno_gpu.c b/drivers/gpu/drm/msm/adreno/adreno_gpu.c
-index 26db1f4b5..67256dafe 100644
+index 26db1f4b5..0bfad99e1 100644
 --- a/drivers/gpu/drm/msm/adreno/adreno_gpu.c
 +++ b/drivers/gpu/drm/msm/adreno/adreno_gpu.c
-@@ -21,6 +21,8 @@
+@@ -21,6 +21,7 @@
  #include "msm_gem.h"
  #include "msm_mmu.h"
  
-+#define GMUTRACE(fmt, ...) pr_info("GMUTRACE " fmt "\n", ##__VA_ARGS__)
 +
  static u64 address_space_size = 0;
  MODULE_PARM_DESC(address_space_size, "Override for size of processes private GPU address space");
  module_param(address_space_size, ullong, 0600);
-@@ -122,7 +124,9 @@ static int zap_shader_load_mdt(struct msm_gpu *gpu, const char *fwname,
- 	}
- 
- 	/* Allocate memory for the firmware image */
-+	GMUTRACE("zap: memremap(0x%llx, %zu)", (u64)mem_phys, (size_t)mem_size);
- 	mem_region = memremap(mem_phys, mem_size,  MEMREMAP_WC);
-+	GMUTRACE("zap: memremap -> %p", mem_region);
- 	if (!mem_region) {
- 		ret = -ENOMEM;
- 		goto out;
-@@ -138,22 +142,28 @@ static int zap_shader_load_mdt(struct msm_gpu *gpu, const char *fwname,
- 	 * we know which of the two cases it is:
- 	 */
- 	if (signed_fwname || (to_adreno_gpu(gpu)->fwloc == FW_LOCATION_LEGACY)) {
-+		GMUTRACE("zap: mdt_load(%s)", fwname);
- 		ret = qcom_mdt_load(dev, fw, fwname, pasid,
- 				mem_region, mem_phys, mem_size, NULL);
-+		GMUTRACE("zap: mdt_load -> %d", ret);
- 	} else {
- 		char *newname;
- 
- 		newname = kasprintf(GFP_KERNEL, "qcom/%s", fwname);
- 
-+		GMUTRACE("zap: mdt_load(%s)", newname);
- 		ret = qcom_mdt_load(dev, fw, newname, pasid,
- 				mem_region, mem_phys, mem_size, NULL);
-+		GMUTRACE("zap: mdt_load -> %d", ret);
- 		kfree(newname);
- 	}
- 	if (ret)
- 		goto out;
- 
- 	/* Send the image to the secure world */
-+	GMUTRACE("zap: auth_and_reset(pas=%u) -- zapusk zashishennogo koda", pasid);
- 	ret = qcom_scm_pas_auth_and_reset(pasid);
-+	GMUTRACE("zap: auth_and_reset -> %d", ret);
- 
- 	/*
- 	 * If the scm call returns -EOPNOTSUPP we assume that this target
 diff --git a/drivers/soc/qcom/mdt_loader.c b/drivers/soc/qcom/mdt_loader.c
-index b2c0fb55d..e83f2982c 100644
+index b2c0fb55d..a3c9c0170 100644
 --- a/drivers/soc/qcom/mdt_loader.c
 +++ b/drivers/soc/qcom/mdt_loader.c
-@@ -18,6 +18,8 @@
+@@ -18,6 +18,7 @@
  #include <linux/slab.h>
  #include <linux/soc/qcom/mdt_loader.h>
  
-+#define GMUTRACE(fmt, ...) pr_info("GMUTRACE " fmt "\n", ##__VA_ARGS__)
 +
  static bool mdt_phdr_valid(const struct elf32_phdr *phdr)
  {
  	if (phdr->p_type != PT_LOAD)
-@@ -240,7 +242,9 @@ int qcom_mdt_pas_init(struct device *dev, const struct firmware *fw,
- 		goto out;
- 	}
- 
-+	GMUTRACE("mdt: init_image(pas=%d, len=%zu)", pas_id, metadata_len);
- 	ret = qcom_scm_pas_init_image(pas_id, metadata, metadata_len, ctx);
-+	GMUTRACE("mdt: init_image -> %d", ret);
- 	kfree(metadata);
- 	if (ret) {
- 		/* Invalid firmware metadata */
-@@ -249,7 +253,10 @@ int qcom_mdt_pas_init(struct device *dev, const struct firmware *fw,
- 	}
- 
- 	if (relocate) {
-+		GMUTRACE("mdt: mem_setup(pas=%d, phys=0x%llx, size=0x%llx)",
-+			 pas_id, (u64)mem_phys, (u64)(max_addr - min_addr));
- 		ret = qcom_scm_pas_mem_setup(pas_id, mem_phys, max_addr - min_addr);
-+		GMUTRACE("mdt: mem_setup -> %d", ret);
- 		if (ret) {
- 			/* Unable to set up relocation */
- 			dev_err(dev, "error %d setting up firmware %s\n", ret, fw_name);
-@@ -373,7 +380,10 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw,
- 				break;
- 			}
- 
-+			GMUTRACE("mdt: memcpy segment %d -> %p, %u b", i, ptr,
-+				 (unsigned int)phdr->p_filesz);
- 			memcpy(ptr, fw->data + phdr->p_offset, phdr->p_filesz);
-+			GMUTRACE("mdt: memcpy segment %d ok", i);
- 		} else if (phdr->p_filesz) {
- 			/* Firmware not large enough, load split-out segments */
- 			ret = mdt_load_split_segment(ptr, phdrs, i, fw_name, dev);
-@@ -381,8 +391,11 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw,
+@@ -381,8 +382,9 @@ static int __qcom_mdt_load(struct device *dev, const struct firmware *fw,
  				break;
  		}
  
 -		if (phdr->p_memsz > phdr->p_filesz)
 +		if (phdr->p_memsz > phdr->p_filesz) {
-+			GMUTRACE("mdt: memset hvosta segmenta %d", i);
  			memset(ptr + phdr->p_filesz, 0, phdr->p_memsz - phdr->p_filesz);
-+			GMUTRACE("mdt: memset ok");
 +		}
  	}
  

@@ -42,8 +42,9 @@ Three things were missing, and none of them are documented anywhere:
    never looks for.
 
 Each of those alone leaves the modem in `DeviceNotReady` forever, with no clue
-as to why. The way out was to read the modem's own F3 log — see
-[docs/HANDOFF.md](docs/HANDOFF.md), sections 12.16 and 12.17.
+as to why. The way out was to read the modem's own F3 log over DIAG — the modem
+says what it is missing in plain words, but only while it is starting up. The
+tool for that is in `tools/diagprobe.py`.
 
 ## Layout
 
@@ -55,8 +56,6 @@ userspace/          patches for ModemManager, tqftpserv and gmobile
 services/           systemd units, the bring-up script, udev rules
 tools/              the servers and probes: Sahara, EFS, data, SMS, DIAG,
                     a filesystem browser for the modem
-docs/HANDOFF.md     the full log of how this was worked out, including every
-                    wrong turn - read this before changing anything
 install.sh          puts the userspace side in place
 ```
 
@@ -118,6 +117,9 @@ Qualcomm phone. Doing it means porting `mhi_satellite` and writing q6voice.
 ## Status of the patches
 
 None of this has been sent upstream yet. The ModemManager fixes and the gmobile
-device entry are ready to be. The kernel side needs the debugging stripped out
-first: `MHIDBG` prints, the `sdx_*` module knobs and the channel tap are a
-workbench, not a patch series.
+device entry are ready to be; the kernel side still needs splitting into a
+proper series with a changelog per patch.
+
+The patches carry no debugging: the tracing that found all of this, the dead-end
+module knobs and the passive channel listener have been taken out, and what is
+left has been built and run on the phone.

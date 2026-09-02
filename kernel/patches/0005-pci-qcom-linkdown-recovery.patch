@@ -1,5 +1,5 @@
 diff --git a/drivers/pci/controller/dwc/pcie-qcom.c b/drivers/pci/controller/dwc/pcie-qcom.c
-index dc98ae633..24404229b 100644
+index dc98ae633..c0532ffd6 100644
 --- a/drivers/pci/controller/dwc/pcie-qcom.c
 +++ b/drivers/pci/controller/dwc/pcie-qcom.c
 @@ -131,7 +131,24 @@
@@ -39,7 +39,7 @@ index dc98ae633..24404229b 100644
  	struct icc_path *icc_mem;
  	struct icc_path *icc_cpu;
  	const struct qcom_pcie_cfg *cfg;
-@@ -1554,6 +1576,131 @@ static void qcom_pcie_init_debugfs(struct qcom_pcie *pcie)
+@@ -1554,6 +1576,110 @@ static void qcom_pcie_init_debugfs(struct qcom_pcie *pcie)
  				    qcom_pcie_link_transition_count);
  }
  
@@ -58,9 +58,6 @@ index dc98ae633..24404229b 100644
 +	if (offset)
 +		lnksta = dw_pcie_readw_dbi(pci, offset + PCI_EXP_LNKSTA);
 +
-+	dev_info(dev, "PCIEDBG %s: link_up=%d LTSSM=%#x LNKSTA=%#x parf_status=%#x\n",
-+		 when, dw_pcie_link_up(pci), ltssm, lnksta,
-+		 readl_relaxed(pcie->parf + PARF_INT_ALL_STATUS));
 +}
 +
 +/*
@@ -78,12 +75,9 @@ index dc98ae633..24404229b 100644
 +	int ret;
 +
 +	pcie->recover_count++;
-+	dev_info(dev, "PCIEDBG recover #%u: begin (link downs seen: %u)\n",
-+		 pcie->recover_count, pcie->link_down_count);
 +	qcom_pcie_log_link(pcie, "recover/before");
 +
 +	if (!pp->bridge || !pp->bridge->bus) {
-+		dev_err(dev, "PCIEDBG recover: no bus, giving up\n");
 +		return;
 +	}
 +
@@ -93,22 +87,17 @@ index dc98ae633..24404229b 100644
 +	 * away the AMSS image it has just finished loading - the whole point
 +	 * of surviving the drop.
 +	 */
-+	dev_info(dev, "PCIEDBG recover: step 1, LTSSM only (modem state kept)\n");
 +	qcom_pcie_start_link(pci);
 +	ret = dw_pcie_wait_for_link(pci);
-+	dev_info(dev, "PCIEDBG recover: step 1 -> %d\n", ret);
 +	qcom_pcie_log_link(pcie, "recover/after-ltssm");
 +
 +	if (ret) {
-+		dev_info(dev, "PCIEDBG recover: step 2, PERST cycle (resets the modem)\n");
 +
 +		pci_lock_rescan_remove();
 +		list_for_each_entry_safe(pdev, tmp, &pp->bridge->bus->devices, bus_list) {
-+			dev_info(dev, "PCIEDBG recover: removing %s\n", pci_name(pdev));
 +			pci_stop_and_remove_bus_device(pdev);
 +		}
 +		pci_unlock_rescan_remove();
-+		dev_info(dev, "PCIEDBG recover: children removed\n");
 +
 +		qcom_ep_reset_assert(pcie);
 +		msleep(100);
@@ -116,50 +105,40 @@ index dc98ae633..24404229b 100644
 +		qcom_pcie_start_link(pci);
 +
 +		ret = dw_pcie_wait_for_link(pci);
-+		dev_info(dev, "PCIEDBG recover: step 2 -> %d\n", ret);
 +		qcom_pcie_log_link(pcie, "recover/after-perst");
 +	}
 +
 +	if (ret && pcie->recover_manual) {
-+		dev_info(dev, "PCIEDBG recover: step 3, full host re-init\n");
 +		/*
 +		 * Only from the manual trigger: pulling the PHY and clocks out
 +		 * from under a bound driver that is mid-MMIO wedges the bus.
 +		 */
-+		dev_info(dev, "PCIEDBG recover: retrying through host deinit/init\n");
 +		qcom_pcie_host_deinit(pp);
 +		ret = qcom_pcie_host_init(pp);
-+		dev_info(dev, "PCIEDBG recover: host_init -> %d\n", ret);
 +		if (!ret) {
 +			qcom_pcie_start_link(pci);
 +			ret = dw_pcie_wait_for_link(pci);
-+			dev_info(dev, "PCIEDBG recover: wait_for_link (2) -> %d\n", ret);
 +		}
 +		qcom_pcie_log_link(pcie, "recover/after-hostinit");
 +	} else if (ret) {
-+		dev_info(dev, "PCIEDBG recover: not retrying, automatic path\n");
 +	}
 +
 +	if (ret) {
-+		dev_err(dev, "PCIEDBG recover: link did not come back\n");
 +		return;
 +	}
 +
-+	dev_info(dev, "PCIEDBG recover: rescanning bus\n");
 +	pci_lock_rescan_remove();
 +	pci_rescan_bus(pp->bridge->bus);
 +	pci_unlock_rescan_remove();
 +
 +	qcom_pcie_icc_opp_update(pcie);
 +	qcom_pcie_log_link(pcie, "recover/done");
-+	dev_info(dev, "PCIEDBG recover #%u: complete\n", pcie->recover_count);
 +}
 +
 +static int qcom_pcie_recover_set(void *data, u64 val)
 +{
 +	struct qcom_pcie *pcie = data;
 +
-+	dev_info(pcie->pci->dev, "PCIEDBG recover requested by hand\n");
 +	pcie->recover_manual = true;
 +	queue_work(qcom_pcie_recover_wq, &pcie->recover_work);
 +
@@ -171,28 +150,22 @@ index dc98ae633..24404229b 100644
  static irqreturn_t qcom_pcie_global_irq_thread(int irq, void *data)
  {
  	struct qcom_pcie *pcie = data;
-@@ -1563,19 +1710,34 @@ static irqreturn_t qcom_pcie_global_irq_thread(int irq, void *data)
+@@ -1563,19 +1689,26 @@ static irqreturn_t qcom_pcie_global_irq_thread(int irq, void *data)
  
  	writel_relaxed(status, pcie->parf + PARF_INT_ALL_CLEAR);
  
-+	dev_info(dev, "PCIEDBG global irq: INT_STATUS=%#08x\n", status);
 +
 +	if (status & PARF_INT_ALL_LINK_DOWN) {
 +		pcie->link_down_count++;
 +		if (qcom_pcie_auto_recover) {
-+			dev_warn(dev, "PCIEDBG link DOWN (#%u), scheduling recovery\n",
-+				 pcie->link_down_count);
 +			pcie->recover_manual = false;
 +			queue_work(qcom_pcie_recover_wq, &pcie->recover_work);
 +		} else {
-+			dev_warn(dev, "PCIEDBG link DOWN (#%u), auto recovery off; write /sys/kernel/debug/qcom-pcie-recover-N to recover\n",
-+				 pcie->link_down_count);
 +		}
 +	}
 +
  	if (FIELD_GET(PARF_INT_ALL_LINK_UP, status)) {
 -		dev_dbg(dev, "Received Link up event. Starting enumeration!\n");
-+		dev_info(dev, "PCIEDBG link UP, enumerating\n");
  		/* Rescan the bus to enumerate endpoint devices */
  		pci_lock_rescan_remove();
  		pci_rescan_bus(pp->bridge->bus);
@@ -204,13 +177,11 @@ index dc98ae633..24404229b 100644
 -			      status);
  	}
  
-+	if (!(status & (PARF_INT_ALL_LINK_DOWN | PARF_INT_ALL_LINK_UP)))
-+		dev_info(dev, "PCIEDBG other event, INT_STATUS: 0x%08x\n", status);
 +
  	return IRQ_HANDLED;
  }
  
-@@ -1709,6 +1871,14 @@ static int qcom_pcie_probe(struct platform_device *pdev)
+@@ -1709,6 +1842,14 @@ static int qcom_pcie_probe(struct platform_device *pdev)
  	if (irq > 0)
  		pp->use_linkup_irq = true;
  
@@ -225,7 +196,7 @@ index dc98ae633..24404229b 100644
  	ret = dw_pcie_host_init(pp);
  	if (ret) {
  		dev_err(dev, "cannot initialize host\n");
-@@ -1732,8 +1902,18 @@ static int qcom_pcie_probe(struct platform_device *pdev)
+@@ -1732,8 +1873,16 @@ static int qcom_pcie_probe(struct platform_device *pdev)
  			goto err_host_deinit;
  		}
  
@@ -234,8 +205,6 @@ index dc98ae633..24404229b 100644
 +			       PARF_INT_MSI_DEV_0_7,
  			       pcie->parf + PARF_INT_ALL_MASK);
 +
-+		dev_info(dev, "PCIEDBG global irq %d armed, INT_ALL_MASK=%#08x\n",
-+			 irq, readl_relaxed(pcie->parf + PARF_INT_ALL_MASK));
 +
 +		name = devm_kasprintf(dev, GFP_KERNEL, "qcom-pcie-recover-%d",
 +				      pci_domain_nr(pp->bridge->bus));

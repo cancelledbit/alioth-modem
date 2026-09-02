@@ -33,19 +33,10 @@ index dda340aae..7ef2fe4c5 100644
  /* State change event */
  #define MHI_SC_EV_PTR			0
 diff --git a/drivers/bus/mhi/host/boot.c b/drivers/bus/mhi/host/boot.c
-index efa3b6ddd..07e3f768f 100644
+index efa3b6ddd..ea4c646d7 100644
 --- a/drivers/bus/mhi/host/boot.c
 +++ b/drivers/bus/mhi/host/boot.c
-@@ -555,6 +555,8 @@ void mhi_fw_load_handler(struct mhi_controller *mhi_cntrl)
- 
- skip_req_fw:
- 	fw_load_type = mhi_fw_load_type_get(mhi_cntrl);
-+	dev_info(dev, "MHIDBG loading %s: %zu of %zu bytes, type %d\n",
-+		 fw_name ? fw_name : "(embedded)", size, fw_sz, fw_load_type);
- 	if (fw_load_type == MHI_FW_LOAD_BHIE)
- 		ret = mhi_load_image_bhie(mhi_cntrl, fw_data, size);
- 	else
-@@ -575,6 +577,28 @@ void mhi_fw_load_handler(struct mhi_controller *mhi_cntrl)
+@@ -575,6 +575,26 @@ void mhi_fw_load_handler(struct mhi_controller *mhi_cntrl)
  		goto fw_load_ready_state;
  	}
  
@@ -66,8 +57,6 @@ index efa3b6ddd..07e3f768f 100644
 +				break;
 +			msleep(100);
 +		}
-+		dev_info(dev, "MHIDBG settled after %d ms, ee=%d\n",
-+			 i * 100, mhi_get_exec_env(mhi_cntrl));
 +
 +	}
 +
@@ -75,7 +64,7 @@ index efa3b6ddd..07e3f768f 100644
  	mhi_cntrl->dev_state = MHI_STATE_RESET;
  	write_unlock_irq(&mhi_cntrl->pm_lock);
 diff --git a/drivers/bus/mhi/host/init.c b/drivers/bus/mhi/host/init.c
-index 13e7a55f5..f14bad9b7 100644
+index 13e7a55f5..c82dc1114 100644
 --- a/drivers/bus/mhi/host/init.c
 +++ b/drivers/bus/mhi/host/init.c
 @@ -467,6 +467,96 @@ int mhi_init_dev_ctxt(struct mhi_controller *mhi_cntrl)
@@ -195,36 +184,24 @@ index 13e7a55f5..f14bad9b7 100644
  		default:
  			dev_err(dev, "Event Ring type not supported\n");
  			goto error_ev_cfg;
-@@ -942,12 +1038,26 @@ int mhi_register_controller(struct mhi_controller *mhi_cntrl,
+@@ -942,12 +1038,14 @@ int mhi_register_controller(struct mhi_controller *mhi_cntrl,
  	    !mhi_cntrl->runtime_get || !mhi_cntrl->runtime_put ||
  	    !mhi_cntrl->status_cb || !mhi_cntrl->read_reg ||
  	    !mhi_cntrl->write_reg || !mhi_cntrl->nr_irqs ||
 -	    !mhi_cntrl->irq || !mhi_cntrl->reg_len)
 +	    !mhi_cntrl->irq || !mhi_cntrl->reg_len) {
-+		pr_err("MHIDBG register_controller: cntrl=%d dev=%d regs=%d get=%d put=%d cb=%d rd=%d wr=%d nr_irqs=%d irq=%d len=%d\n",
-+		       !!mhi_cntrl, mhi_cntrl && !!mhi_cntrl->cntrl_dev,
-+		       mhi_cntrl && !!mhi_cntrl->regs,
-+		       mhi_cntrl && !!mhi_cntrl->runtime_get,
-+		       mhi_cntrl && !!mhi_cntrl->runtime_put,
-+		       mhi_cntrl && !!mhi_cntrl->status_cb,
-+		       mhi_cntrl && !!mhi_cntrl->read_reg,
-+		       mhi_cntrl && !!mhi_cntrl->write_reg,
-+		       mhi_cntrl ? mhi_cntrl->nr_irqs : -1,
-+		       mhi_cntrl && !!mhi_cntrl->irq,
-+		       mhi_cntrl ? (int)mhi_cntrl->reg_len : -1);
  		return -EINVAL;
 +	}
  
  	ret = parse_config(mhi_cntrl, config);
 -	if (ret)
 +	if (ret) {
-+		pr_err("MHIDBG register_controller: parse_config -> %d\n", ret);
  		return -EINVAL;
 +	}
  
  	mhi_cntrl->mhi_cmd = kcalloc(NR_OF_CMD_RINGS,
  				     sizeof(*mhi_cntrl->mhi_cmd), GFP_KERNEL);
-@@ -962,6 +1072,8 @@ int mhi_register_controller(struct mhi_controller *mhi_cntrl,
+@@ -962,6 +1060,8 @@ int mhi_register_controller(struct mhi_controller *mhi_cntrl,
  	spin_lock_init(&mhi_cntrl->transition_lock);
  	spin_lock_init(&mhi_cntrl->wlock);
  	INIT_WORK(&mhi_cntrl->st_worker, mhi_pm_st_worker);
@@ -233,7 +210,7 @@ index 13e7a55f5..f14bad9b7 100644
  	init_waitqueue_head(&mhi_cntrl->state_event);
  
  	mhi_cntrl->hiprio_wq = alloc_ordered_workqueue("mhi_hiprio_wq", WQ_HIGHPRI);
-@@ -1077,6 +1189,7 @@ void mhi_unregister_controller(struct mhi_controller *mhi_cntrl)
+@@ -1077,6 +1177,7 @@ void mhi_unregister_controller(struct mhi_controller *mhi_cntrl)
  	unsigned int i;
  
  	mhi_deinit_free_irq(mhi_cntrl);
@@ -274,28 +251,23 @@ index ce566f7d2..42db2f695 100644
  			     struct mhi_event *mhi_event, u32 event_quota);
  
 diff --git a/drivers/bus/mhi/host/main.c b/drivers/bus/mhi/host/main.c
-index 9bb0df43c..a88654fc6 100644
+index 9bb0df43c..6fd343a2e 100644
 --- a/drivers/bus/mhi/host/main.c
 +++ b/drivers/bus/mhi/host/main.c
-@@ -431,6 +431,12 @@ void mhi_create_devices(struct mhi_controller *mhi_cntrl)
+@@ -431,6 +431,9 @@ void mhi_create_devices(struct mhi_controller *mhi_cntrl)
  
  irqreturn_t mhi_irq_handler(int irq_number, void *dev)
  {
 +	{
 +		struct mhi_event *_ev = dev;
-+		dev_info_ratelimited(&_ev->mhi_cntrl->mhi_dev->dev,
-+				     "MHIDBG ev irq %d ring %d\n",
-+				     irq_number, _ev->er_index);
 +	}
  	struct mhi_event *mhi_event = dev;
  	struct mhi_controller *mhi_cntrl = mhi_event->mhi_cntrl;
  	struct mhi_event_ctxt *er_ctxt;
-@@ -495,6 +501,17 @@ irqreturn_t mhi_intvec_threaded_handler(int irq_number, void *priv)
+@@ -495,6 +498,15 @@ irqreturn_t mhi_intvec_threaded_handler(int irq_number, void *priv)
  	state = mhi_get_mhi_state(mhi_cntrl);
  	ee = mhi_get_exec_env(mhi_cntrl);
  
-+	dev_info(dev, "MHIDBG intvec: ee=%d state=%d (known ee=%d)\n",
-+		 ee, state, mhi_cntrl->ee);
 +
 +	if (state != MHI_STATE_SYS_ERR && ee != mhi_cntrl->ee) {
 +		if (ee == MHI_EE_SBL)
@@ -308,7 +280,7 @@ index 9bb0df43c..a88654fc6 100644
  	trace_mhi_intvec_states(mhi_cntrl, ee, state);
  	if (state == MHI_STATE_SYS_ERR) {
  		dev_dbg(dev, "System error detected\n");
-@@ -690,7 +707,9 @@ static int parse_xfer_event(struct mhi_controller *mhi_cntrl,
+@@ -690,7 +702,9 @@ static int parse_xfer_event(struct mhi_controller *mhi_cntrl,
  	}
  	case MHI_EV_CC_BAD_TRE:
  	default:
@@ -319,7 +291,7 @@ index 9bb0df43c..a88654fc6 100644
  		break;
  	} /* switch(MHI_EV_READ_CODE(EV_TRB_CODE,event)) */
  
-@@ -802,6 +821,112 @@ static void mhi_process_cmd_completion(struct mhi_controller *mhi_cntrl,
+@@ -802,6 +816,112 @@ static void mhi_process_cmd_completion(struct mhi_controller *mhi_cntrl,
  	mhi_del_ring_element(mhi_cntrl, mhi_ring);
  }
  
@@ -432,18 +404,16 @@ index 9bb0df43c..a88654fc6 100644
  int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
  			     struct mhi_event *mhi_event,
  			     u32 event_quota)
-@@ -901,8 +1026,8 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
+@@ -901,8 +1021,6 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
  			enum dev_st_transition st = DEV_ST_TRANSITION_MAX;
  			enum mhi_ee_type event = MHI_TRE_GET_EV_EXECENV(local_rp);
  
 -			dev_dbg(dev, "Received EE event: %s\n",
 -				TO_MHI_EXEC_STR(event));
-+			dev_info(dev, "MHIDBG Received EE event: %s\n",
-+				 TO_MHI_EXEC_STR(event));
  			switch (event) {
  			case MHI_EE_SBL:
  				st = DEV_ST_TRANSITION_SBL;
-@@ -947,7 +1072,11 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
+@@ -947,7 +1065,11 @@ int mhi_process_ctrl_ev_ring(struct mhi_controller *mhi_cntrl,
  			}
  			break;
  		default:
@@ -457,7 +427,7 @@ index 9bb0df43c..a88654fc6 100644
  		}
  
 diff --git a/drivers/bus/mhi/host/pm.c b/drivers/bus/mhi/host/pm.c
-index 2fb27e6f8..5cbeb1728 100644
+index 2fb27e6f8..2a571f504 100644
 --- a/drivers/bus/mhi/host/pm.c
 +++ b/drivers/bus/mhi/host/pm.c
 @@ -167,12 +167,39 @@ static void mhi_toggle_dev_wake(struct mhi_controller *mhi_cntrl)
@@ -500,7 +470,7 @@ index 2fb27e6f8..5cbeb1728 100644
  	u32 timeout_ms;
  	int ret, i;
  
-@@ -251,6 +278,25 @@ int mhi_ready_state_transition(struct mhi_controller *mhi_cntrl)
+@@ -251,6 +278,23 @@ int mhi_ready_state_transition(struct mhi_controller *mhi_cntrl)
  	mhi_set_mhi_state(mhi_cntrl, MHI_STATE_M0);
  	read_unlock_bh(&mhi_cntrl->pm_lock);
  
@@ -515,8 +485,6 @@ index 2fb27e6f8..5cbeb1728 100644
 +	 */
 +	ee = mhi_get_exec_env(mhi_cntrl);
 +	if (ee == MHI_EE_SBL || (MHI_IN_MISSION_MODE(ee) && ee != mhi_cntrl->ee)) {
-+		dev_info(dev, "MHIDBG post-ready ee=%d (known %d), forcing transition\n",
-+			 ee, mhi_cntrl->ee);
 +		mhi_queue_state_transition(mhi_cntrl,
 +					   ee == MHI_EE_SBL ?
 +					   DEV_ST_TRANSITION_SBL :
@@ -526,18 +494,15 @@ index 2fb27e6f8..5cbeb1728 100644
  	return 0;
  
  error_mmio:
-@@ -793,6 +839,10 @@ void mhi_pm_st_worker(struct work_struct *work)
+@@ -793,6 +837,7 @@ void mhi_pm_st_worker(struct work_struct *work)
  
  		trace_mhi_pm_st_transition(mhi_cntrl, itr->state);
  
-+		dev_info(&mhi_cntrl->mhi_dev->dev,
-+			 "MHIDBG st_worker: transition %d, ee=%d\n",
-+			 itr->state, mhi_cntrl->ee);
 +
  		switch (itr->state) {
  		case DEV_ST_TRANSITION_PBL:
  			write_lock_irq(&mhi_cntrl->pm_lock);
-@@ -842,7 +892,7 @@ void mhi_pm_st_worker(struct work_struct *work)
+@@ -842,7 +887,7 @@ void mhi_pm_st_worker(struct work_struct *work)
  	}
  }
  
@@ -546,7 +511,7 @@ index 2fb27e6f8..5cbeb1728 100644
  {
  	struct mhi_chan *itr, *tmp;
  	struct device *dev = &mhi_cntrl->mhi_dev->dev;
-@@ -856,8 +906,8 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
+@@ -856,8 +901,8 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
  		return -EIO;
  
  	/* Return busy if there are any pending resources */
@@ -557,7 +522,7 @@ index 2fb27e6f8..5cbeb1728 100644
  		return -EBUSY;
  
  	/* Take MHI out of M2 state */
-@@ -883,8 +933,8 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
+@@ -883,8 +928,8 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
  
  	write_lock_irq(&mhi_cntrl->pm_lock);
  
@@ -568,7 +533,7 @@ index 2fb27e6f8..5cbeb1728 100644
  		write_unlock_irq(&mhi_cntrl->pm_lock);
  		return -EBUSY;
  	}
-@@ -928,8 +978,25 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
+@@ -928,8 +973,25 @@ int mhi_pm_suspend(struct mhi_controller *mhi_cntrl)
  
  	return 0;
  }
